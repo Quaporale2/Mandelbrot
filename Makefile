@@ -9,6 +9,9 @@ SRCDIR = src
 OBJDIR = obj
 INCDIR = include
 
+ICON_RES = icon.res
+
+
 # Fichiers source
 SRCS = $(wildcard $(SRCDIR)/*.c)
 
@@ -21,11 +24,18 @@ CC = gcc
 CFLAGS = -I$(INCDIR) -I./libs/SDL2-linux/include -L./libs/SDL2-linux/lib \
          -lSDL2 -lSDL2_image -lSDL2_ttf -g -Wall -lmpfr -lgmp -lm -Winline 
 
+
+
+
+$(ICON_RES): icon.rc icon.ico
+	x86_64-w64-mingw32-windres icon.rc -O coff -o $(ICON_RES)
+
 # Compilateur Windows (cross-compilation)
 WIN_CC = x86_64-w64-mingw32-gcc
 WIN_CFLAGS = -I$(INCDIR) -I./libs/SDL2-win/include -I./libs/SDL2-win/include/SDL2 -L./libs/SDL2-win/lib \
              -lSDL2 -lSDL2_image -lSDL2_ttf -lm -static \
              -lsetupapi -lole32 -lcomdlg32 -limm32 -lversion -lwinmm -lgdi32 -ldinput8 -luser32 -ladvapi32 -lshell32 -loleaut32 -lrpcrt4 -mwindows
+
 
 # Cibles
 all: linux windows
@@ -38,7 +48,7 @@ $(LINUX_OUTPUT): $(OBJS)
 	$(CC) $^ $(CFLAGS) -o $@
 
 # Windows target
-$(WIN_OUTPUT): $(WIN_OBJS)
+$(WIN_OUTPUT): $(WIN_OBJS) $(ICON_RES)
 	$(WIN_CC) $^ $(WIN_CFLAGS) -o $@
 
 # Compilation Linux
@@ -55,4 +65,4 @@ $(OBJDIR):
 
 # Nettoyage
 clean:
-	rm -rf $(OBJDIR) $(TARGET) $(WIN_TARGET)
+	rm -rf $(OBJDIR) $(TARGET) $(WIN_TARGET) $(ICON_RES)

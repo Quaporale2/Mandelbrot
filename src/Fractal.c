@@ -58,7 +58,10 @@ typedef struct {
 // Pour mieux voir les différents types de menus
 enum menuTypes {
     no_menu = 0,
-    max_iteration_menu = 2
+    max_iteration_menu = 1,
+    zoom_menu = 2,
+    offsetX_menu = 3,
+    offsetY_menu = 4
 };
 
 // Pour les différents types de positionnement du texte
@@ -765,6 +768,7 @@ int main(int argc, char *argv[]) {
                 render_text(renderer, font, "Espace pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
                 render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
                 render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
             }
             
             // Affiche le tout
