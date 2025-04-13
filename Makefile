@@ -1,8 +1,17 @@
 
+
 # Nom des exécutables
 VERSION = v1.0
 LINUX_OUTPUT = Fractal-linux-x86_64-$(VERSION)
 WIN_OUTPUT = Fractal-win64-$(VERSION).exe
+
+
+# Cibles
+all: linux windows
+
+linux: $(LINUX_OUTPUT)
+windows: $(WIN_OUTPUT)
+
 
 # Dossiers contenant les sources et les en-têtes
 SRCDIR = src
@@ -19,6 +28,7 @@ SRCS = $(wildcard $(SRCDIR)/*.c)
 OBJS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SRCS))
 WIN_OBJS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.win.o,$(SRCS))
 
+
 # Compilateur Linux
 CC = gcc
 CFLAGS = -I$(INCDIR) -I./libs/SDL2-linux/include -L./libs/SDL2-linux/lib \
@@ -26,7 +36,7 @@ CFLAGS = -I$(INCDIR) -I./libs/SDL2-linux/include -L./libs/SDL2-linux/lib \
 
 
 
-
+# Compilation de l'icone
 $(ICON_RES): icon.rc icon.ico
 	x86_64-w64-mingw32-windres icon.rc -O coff -o $(ICON_RES)
 
@@ -36,12 +46,6 @@ WIN_CFLAGS = -I$(INCDIR) -I./libs/SDL2-win/include -I./libs/SDL2-win/include/SDL
              -lSDL2 -lSDL2_image -lSDL2_ttf -lm -static \
              -lsetupapi -lole32 -lcomdlg32 -limm32 -lversion -lwinmm -lgdi32 -ldinput8 -luser32 -ladvapi32 -lshell32 -loleaut32 -lrpcrt4 -mwindows
 
-
-# Cibles
-all: linux windows
-
-linux: $(LINUX_OUTPUT)
-windows: $(WIN_OUTPUT)
 
 # Linux target
 $(LINUX_OUTPUT): $(OBJS)
@@ -55,6 +59,9 @@ $(WIN_OUTPUT): $(WIN_OBJS) $(ICON_RES)
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) -c $< $(CFLAGS) -o $@
 
+# Autoriser le script linux en éxécution
+chmod +x $(realpath $(LINUX_OUTPUT))
+
 # Compilation Windows
 $(OBJDIR)/%.win.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(WIN_CC) -c $< $(WIN_CFLAGS) -o $@
@@ -66,3 +73,13 @@ $(OBJDIR):
 # Nettoyage
 clean:
 	rm -rf $(OBJDIR) $(TARGET) $(WIN_TARGET) $(ICON_RES)
+
+
+
+# Installe l'icone pour les systèmes linux
+install-icon-linux:
+	sed "s|__DIR__|$(realpath .)|g" Fractal.desktop | sed "s|__EXEC__|$(LINUX_OUTPUT)|g" > ~/.local/share/applications/fractal.desktop
+	chmod +x ~/.local/share/applications/fractal.desktop
+
+
+

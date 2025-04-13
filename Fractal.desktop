@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Mandelbrot
+Exec=__DIR__/__EXEC__
+Icon=__DIR__/icon.png
+Terminal=false
+Categories=Game;
