@@ -736,34 +736,34 @@ int main(int argc, char *argv[]) {
                         break;
                 }
                 // Toggle pour cacher/montrer l'affichage avec la touche H
-                if (event.key.keysym.sym == SDLK_h && initialClickDone) {
+                if (event.key.keysym.sym == SDLK_h && !menuMode && initialClickDone) {
                     hideInterface = !hideInterface;
                     redrawAllIfMovement = true;
                 }
                 // Toggle pour activer/désactiver l'antialiasing avec la touche J
-                if (event.key.keysym.sym == SDLK_j && initialClickDone) {
+                if (event.key.keysym.sym == SDLK_j && !menuMode && initialClickDone) {
                     activateAntialiasing = !activateAntialiasing;
                     redrawAllAuto = true;
                 }
                 // Toggle pour activer/désactiver l'autorefresh de l'image du mandelbrot avec la touche R
-                if (event.key.keysym.sym == SDLK_r && initialClickDone) {
+                if (event.key.keysym.sym == SDLK_r && !menuMode && initialClickDone) {
                     activateAutoRefresh = !activateAutoRefresh;
                     redrawAllIfMovement = true;
                 }
                 // Toggle pour activer/désactiver l'autorefresh le mode de précision élevé avec la touche M
                 // Précision complexe seulement dans la version linux
                 #ifdef __linux__
-                    if (event.key.keysym.sym == SDLK_m && initialClickDone) {
+                    if (event.key.keysym.sym == SDLK_m && !menuMode && initialClickDone) {
                         advancedMode = !advancedMode;
                         redrawAllAuto = true;
                     }
                 #endif
                 // Lance un redessin manuel
-                if (event.key.keysym.sym == SDLK_SPACE && initialClickDone) {
+                if (event.key.keysym.sym == SDLK_SPACE && !menuMode && initialClickDone) {
                     redrawAll = true;
                 }
                 // Passe à travers les différentes Palettes de couleurs avec la touche B
-                if (event.key.keysym.sym == SDLK_b && initialClickDone) {
+                if (event.key.keysym.sym == SDLK_b && !menuMode && initialClickDone) {
                     switch (colorScheme) {
                         case HOT_COLD:
                             colorScheme = WHITE_BLACK;
@@ -813,6 +813,28 @@ int main(int argc, char *argv[]) {
                 leftSelecting = false;
                 leftDragging = false;
             }
+            // Gestion du clic gauche glissé, lorsqu'on bouge
+            if (event.type == SDL_MOUSEMOTION && leftSelecting && (event.motion.state & SDL_BUTTON_LMASK)) {
+                int dx = event.motion.x - leftClickStartX;
+                int dy = event.motion.y - leftClickStartY;
+
+                if (!leftDragging && (abs(dx) > 2 || abs(dy) > 2)) {
+                    leftDragging = true; // on considère que c’est un vrai glissement
+                    // Sauvegarde dans l'historique au début du drag
+                    if (event.type != lastActionType) {
+                        push_view(zoom, offsetX, offsetY);
+                        lastActionType = event.type;
+                    }
+                }
+
+                if (leftDragging) {
+                    offsetX -= dx / zoom;
+                    offsetY -= dy / zoom;
+                    leftClickStartX = event.motion.x; // mettre à jour pour les prochains deltas
+                    leftClickStartY = event.motion.y;
+                    redrawInterface = true;
+                }
+            }
             // Gestion du clic droit simple
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && rightSelecting && !rightDragging) {
                 rightSelecting = false;
@@ -847,28 +869,6 @@ int main(int argc, char *argv[]) {
                 
                 redrawInterface = true;
                 redrawAllIfMovement = true;
-            }
-            // Gestion du clic gauche glissé, lorsqu'on bouge
-            if (event.type == SDL_MOUSEMOTION && leftSelecting && (event.motion.state & SDL_BUTTON_LMASK)) {
-                int dx = event.motion.x - leftClickStartX;
-                int dy = event.motion.y - leftClickStartY;
-
-                if (!leftDragging && (abs(dx) > 2 || abs(dy) > 2)) {
-                    leftDragging = true; // on considère que c’est un vrai glissement
-                    // Sauvegarde dans l'historique au début du drag
-                    if (event.type != lastActionType) {
-                        push_view(zoom, offsetX, offsetY);
-                        lastActionType = event.type;
-                    }
-                }
-
-                if (leftDragging) {
-                    offsetX -= dx / zoom;
-                    offsetY -= dy / zoom;
-                    leftClickStartX = event.motion.x; // mettre à jour pour les prochains deltas
-                    leftClickStartY = event.motion.y;
-                    redrawInterface = true;
-                }
             }
             
             // Gestion de l'actualisation de la taille de la texture au changement de taille d'écran
@@ -1097,6 +1097,7 @@ int main(int argc, char *argv[]) {
             SDL_RenderPresent(renderer);
             
             // Plus besoin de redessiner
+            redrawInterface = false;
             redrawAllIfMovement = false;
             redrawAllAuto = false;
             redrawAll = false;
