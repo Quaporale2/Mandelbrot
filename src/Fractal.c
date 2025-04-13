@@ -331,6 +331,7 @@ int main(int argc, char *argv[]) {
                 menuMode = no_menu;
                 
                 initialClickDone = false;
+                redrawInterface = true;
             }
             // Revient en arrière dans l'historique sur clic gauche
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && !rightDragging && !menuMode && initialClickDone) {
@@ -684,8 +685,8 @@ int main(int argc, char *argv[]) {
             calculateImage = true;
         }
 
-        // Si l'utilisateur n'a pas encore cliqué après le redimensionnement, on ne redessine pas la fractale
-        if (!initialClickDone) {
+        // Si l'utilisateur n'a pas encore cliqué après le redimensionnement et qu'on actualise l'affichage, on affiche just un message
+        if (!initialClickDone && redrawInterface) {
             // Afficher texture centrée uniquement
             SDL_SetRenderTarget(renderer, NULL);
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -701,15 +702,22 @@ int main(int argc, char *argv[]) {
             dstRect.y = (windowHeight - texH) / 2;
 
             SDL_RenderCopy(renderer, fractalTexture, NULL, &dstRect);
+            
             render_text(renderer, font, "Cliquez pour réactiver...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
-            SDL_RenderPresent(renderer);
+            
+            // Empecher les fonctions classique de dessiner
             redrawInterface = false;
             queryCalculateImage = false;
             calculateImage = false;
             
             drawingMade = true;
         }
-
+        // Si l'utilisateur n'a pas encore cliqué après le redimensionnement et qu'on ne fait rien, on empêche de dessiner
+        if (!initialClickDone) {
+            redrawInterface = false;
+            queryCalculateImage = false;
+            calculateImage = false;
+        }
 
 
         // Si on modifie la vue et qu'on demande un recalcul, ou qu'on force un recalcul
