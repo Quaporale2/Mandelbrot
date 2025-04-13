@@ -1,0 +1,99 @@
+
+Petit Manuel Git
+Configuration de base
+
+    Configurer le nom d'utilisateur :
+    git config --global user.name "TonNom"
+
+    Configurer l'adresse e-mail :
+    git config --global user.email "ton.email@example.com"
+
+    Vérifier la configuration :
+    git config --list
+
+Commandes de base
+
+    Initialiser un dépôt Git dans un dossier :
+    git init
+
+    Cloner un dépôt Git distant :
+    git clone <url-du-dépôt>
+
+    Ajouter des fichiers au suivi (staging area) :
+    git add <nom-du-fichier> (pour un fichier)
+    git add . (pour tous les fichiers)
+
+    Créer un commit :
+    git commit -m "Message du commit"
+
+Travailler avec les branches
+
+    Lister les branches :
+    git branch
+
+    Créer une nouvelle branche :
+    git branch <nom-de-la-branche>
+
+    Changer de branche :
+    git checkout <nom-de-la-branche>
+
+    Créer et basculer vers une nouvelle branche :
+    git checkout -b <nom-de-la-branche>
+
+    Fusionner une branche dans la branche actuelle :
+    git merge <nom-de-la-branche>
+
+    Supprimer une branche :
+    git branch -d <nom-de-la-branche>
+
+Commandes pour le dépôt distant
+
+    Lier un dépôt local à un dépôt distant :
+    git remote add origin <url-du-dépôt>
+
+    Vérifier les dépôts distants :
+    git remote -v
+
+    Pousser une branche vers le dépôt distant :
+    git push -u origin <nom-de-la-branche>
+
+    Récupérer les modifications du dépôt distant (sans fusionner) :
+    git fetch origin
+
+    Récupérer et fusionner les modifications :
+    git pull origin <nom-de-la-branche>
+
+    Supprimer une branche distante :
+    git push origin --delete <nom-de-la-branche>
+
+Visualisation et suivi
+
+    Voir l'état actuel du dépôt (fichiers modifiés, ajoutés, etc.) :
+    git status
+
+    Afficher l'historique des commits :
+    git log
+
+    Voir l'historique en une ligne par commit :
+    git log --oneline
+
+    Voir les différences entre les fichiers modifiés et le dernier commit :
+    git diff
+
+Commandes avancées
+
+    Réinitialiser le suivi d'un fichier ajouté :
+    git reset <nom-du-fichier>
+
+    Annuler le dernier commit (en gardant les modifications dans le staging) :
+    git reset --soft HEAD~1
+
+    Annuler le dernier commit (et les retirer du staging) :
+    git reset --mixed HEAD~1
+
+    Remettre le dépôt dans un état propre (attention !) :
+    git clean -fd
+
+    Annuler toutes les modifications non commitées (attention !) :
+    git reset --hard
+
