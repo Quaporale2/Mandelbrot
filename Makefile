@@ -25,7 +25,7 @@ CFLAGS = -I$(INCDIR) -I./libs/SDL2-linux/include -L./libs/SDL2-linux/lib \
 WIN_CC = x86_64-w64-mingw32-gcc
 WIN_CFLAGS = -I$(INCDIR) -I./libs/SDL2-win/include -I./libs/SDL2-win/include/SDL2 -L./libs/SDL2-win/lib \
              -lSDL2 -lSDL2_image -lSDL2_ttf -lm -static \
-             -lsetupapi -lole32 -lcomdlg32 -limm32 -lversion -lwinmm -lgdi32 -ldinput8 -luser32 -ladvapi32 -lshell32 -loleaut32 -lrpcrt4
+             -lsetupapi -lole32 -lcomdlg32 -limm32 -lversion -lwinmm -lgdi32 -ldinput8 -luser32 -ladvapi32 -lshell32 -loleaut32 -lrpcrt4 -mwindows
 
 # Cibles
 all: linux windows
