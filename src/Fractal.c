@@ -579,7 +579,6 @@ int main(int argc, char *argv[]) {
     TTF_Init();
     TTF_Font *font = TTF_OpenFont("DejaVuSans.ttf", 16); // Assure-toi d’avoir cette police
     if (!font) {
-        printf("Erreur chargement de la police : %s\n", TTF_GetError());
         return 1;
     }
 
