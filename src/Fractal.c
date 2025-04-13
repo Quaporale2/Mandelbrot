@@ -733,38 +733,38 @@ int main(int argc, char *argv[]) {
                 // Controles, bord bas droite
                 #ifdef __linux__
                     if (advancedMode) {
-                        render_text(renderer, font, "M pour toggle précision Normale/Haute:   HAUTE", windowWidth - 10, windowHeight - verticalSpacing, ORIGIN_UP_RIGHT);
+                        render_text(renderer, font, "M pour toggle précision Normale/Haute:   HAUTE", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
                     } else {
-                        render_text(renderer, font, "M pour toggle précision Normale/Haute: NORMALE", windowWidth - 10, windowHeight - verticalSpacing, ORIGIN_UP_RIGHT);
+                        render_text(renderer, font, "M pour toggle précision Normale/Haute: NORMALE", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
                     }
                 #endif
 
                 if (activateAntialiasing) {
-                    render_text(renderer, font, "J pour toggle l'antialiasing:  ON", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "J pour toggle l'antialiasing:  ON", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
                 } else {
-                    render_text(renderer, font, "J pour toggle l'antialiasing: OFF", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "J pour toggle l'antialiasing: OFF", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
                 }
 
                 if (activateAutoRefresh) {
-                    render_text(renderer, font, "R pour toggle l'autorefresh:  ON", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "R pour toggle l'autorefresh:  ON", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
                 } else {
-                    render_text(renderer, font, "R pour toggle l'autorefresh: OFF", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "R pour toggle l'autorefresh: OFF", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
                 }
 
                 switch (colorScheme) {
                     case HOT_COLD:
-                        render_text(renderer, font, "B pour alterner les couleurs: CHAUD/FROID", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
+                        render_text(renderer, font, "B pour alterner les couleurs: CHAUD/FROID", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
                         break;
                     case WHITE_BLACK:
-                        render_text(renderer, font, "B pour alterner les couleurs:  BLANC/NOIR", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
+                        render_text(renderer, font, "B pour alterner les couleurs:  BLANC/NOIR", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
                         break;
                 }
-
-                render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
-                render_text(renderer, font, "I pour entrer une nouvelle valeur d'itérations max", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
-                render_text(renderer, font, "Espace pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
-                render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
-                render_text(renderer, font, "Clic droit/gauche glissé & flèches directionnelles pour naviguer", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
+                
+                render_text(renderer, font, "Clic droit/gauche glissé & flèches directionnelles pour naviguer", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "I pour entrer une nouvelle valeur d'itérations max", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "Espace pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
             }
             
             // Affiche le tout
