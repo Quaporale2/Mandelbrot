@@ -15,8 +15,11 @@
 #include <time.h>
 #include <math.h>
 #include <string.h>
-#include <pthread.h>
 #include <ctype.h>
+
+// Pour l'éxécution d'un thread secondaire
+//#include <pthread.h>
+//#include <stdatomic.h>
 
 // Pour la librairie graphique SDL
 #include <SDL2/SDL.h>
@@ -54,6 +57,21 @@ typedef struct {
     double offsetX;
     double offsetY;
 } FractalView;
+
+
+// Pour la séparation en un deuxième thread lors du calcul
+typedef struct {
+    int *iterationMap;
+    int max_iteration;
+    int actual_max;
+    double zoom, offsetX, offsetY;
+    int width, height;
+    bool antialiasing;
+
+    int progress;  // De 0 à 100
+    bool finished;
+} FractalTask;
+
 
 // Pour mieux voir les différents types de menus
 enum menuTypes {
@@ -102,7 +120,9 @@ void push_view(double zoom, double offsetX, double offsetY);
 bool pop_view(double *zoom, double *offsetX, double *offsetY);
 
 // Calcul de l'image du Mandelbrot
-void draw_mandelbrot_normal(SDL_Renderer *renderer, SDL_Texture *texture, int max_iteration, double zoom, double offsetX, double offsetY, int width, int height, bool antialiasing);
+//void draw_mandelbrot_normal(SDL_Renderer *renderer, SDL_Texture *texture, int max_iteration, double zoom, double offsetX, double offsetY, int width, int height, bool antialiasing);
+int calculate_iterations(void* arg);
+void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
 #ifdef __linux__
     void draw_mandelbrot_high_precision(SDL_Renderer *renderer, SDL_Texture *texture, int max_iteration, double zoom, double offsetX, double offsetY, int width, int height, bool antialiasing);
 #endif
@@ -116,6 +136,7 @@ void calculate_rectangles(double fx1, double fy1, double fx2, double fy2, int wi
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
 void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY);
+
 
 
 // Dessine le texte passé en paramètre
@@ -186,15 +207,15 @@ int main(int argc, char *argv[]) {
     double lastZoom = zoom;
     double lastOffsetX = offsetX;
     double lastOffsetY = offsetY;
+
     
-    // Redessine l'interface
+    // Variables permettant de suivre les demandes de dessin
     bool redrawInterface = false;
-    // Redessine l'interface, et recalcule le mandelbrot si le zoom ou l'offset à changé, sauf si autorefresh désactivé
-    bool redrawAllIfMovement = false;
-    // Redessine forcément l'interface et recalcule le mandelbrot, sauf si autorefresh désactivé
-    bool redrawAllAuto = false;
-    // Si l'utilisateur demande manuellement un redessin, on redessine l'interface et on recalcule le Mandelbrot
-    bool redrawAll = true;
+    bool queryCalculateImage = false;
+    bool calculateImage = true;
+    bool drawingMade = false;
+    
+    
     
     // Après modification de taille de la fenêtre, indique si on attend le clic de déblocage
     bool initialClickDone = true;
@@ -218,7 +239,8 @@ int main(int argc, char *argv[]) {
     bool rightDragging = false;
     SDL_Point selectStart = {0, 0}, selectEnd = {0, 0};
     
-
+    bool fractalCalcPending = false;
+    
     // Initialise la police d'écriture
     TTF_Init();
     TTF_Font *font = TTF_OpenFont(fontPath, (int)(8 + windowWidth * 0.006));
@@ -241,6 +263,20 @@ int main(int argc, char *argv[]) {
 
     // Contient les évenement de la fenêtre
     SDL_Event event;
+    
+    FractalTask task;
+    task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
+    task.max_iteration = 0;
+    task.actual_max = 0;
+    task.zoom = 0;
+    task.offsetX = 0;
+    task.offsetY = 0;
+    task.width = 0;
+    task.height = 0;
+    task.antialiasing = false;
+    task.progress = 0;
+    task.finished = false;
+
 
     // Génère la palette de couleurs qui va servir à colorer le mandelbrot
     switch (colorScheme) {
@@ -299,12 +335,12 @@ int main(int argc, char *argv[]) {
             // Revient en arrière dans l'historique sur clic gauche
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && !rightDragging && !menuMode && initialClickDone) {
                 if (pop_view(&zoom, &offsetX, &offsetY)) {
-                    redrawAllIfMovement = true;
+                    queryCalculateImage = true;
                 }
             }
             // Clic molette ou espace recalcule le mandelbrot
             if (((event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_MIDDLE) || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_SPACE)) && !menuMode && initialClickDone) {
-                redrawAll = true;
+                calculateImage = true;
             }
             // Si on scrolle avec la molette
             if (event.type == SDL_MOUSEWHEEL && initialClickDone && !menuMode) {
@@ -338,7 +374,8 @@ int main(int argc, char *argv[]) {
                 offsetX += fx_before - fx_after;
                 offsetY += fy_before - fy_after;
 
-                redrawAllIfMovement = true;
+                redrawInterface = true;
+                queryCalculateImage = true;
             }
             if (event.type == SDL_KEYDOWN && initialClickDone && !menuMode) {
                 switch (event.key.keysym.sym) {
@@ -395,7 +432,8 @@ int main(int argc, char *argv[]) {
                             lastActionValue = event.key.keysym.sym;
                         }
                         zoom *= 1.6;
-                        redrawAllIfMovement = true;
+                        redrawInterface = true;
+                        queryCalculateImage = true;
                         break;
                     // Touche moins
                     case SDLK_MINUS:
@@ -406,30 +444,32 @@ int main(int argc, char *argv[]) {
                             lastActionValue = event.key.keysym.sym;
                         }
                         zoom /= 1.6;
-                        redrawAllIfMovement = true;
+                        redrawInterface = true;
+                        queryCalculateImage = true;
                         break;
                 }
                 // Toggle pour cacher/montrer l'affichage avec la touche H
                 if (event.key.keysym.sym == SDLK_h && !menuMode && initialClickDone) {
                     hideInterface = !hideInterface;
-                    redrawAllIfMovement = true;
+                    redrawInterface = true;
                 }
                 // Toggle pour activer/désactiver l'antialiasing avec la touche J
                 if (event.key.keysym.sym == SDLK_j && !menuMode && initialClickDone) {
                     activateAntialiasing = !activateAntialiasing;
-                    redrawAllAuto = true;
+                    queryCalculateImage = true;
                 }
                 // Toggle pour activer/désactiver l'autorefresh de l'image du mandelbrot avec la touche R
                 if (event.key.keysym.sym == SDLK_r && !menuMode && initialClickDone) {
                     activateAutoRefresh = !activateAutoRefresh;
-                    redrawAllIfMovement = true;
+                    redrawInterface = true;
                 }
                 // Toggle pour activer/désactiver l'autorefresh le mode de précision élevé avec la touche M
                 // Précision complexe seulement dans la version linux
                 #ifdef __linux__
                     if (event.key.keysym.sym == SDLK_m && !menuMode && initialClickDone) {
                         advancedMode = !advancedMode;
-                        redrawAllAuto = true;
+                        redrawInterface = true;
+                        queryCalculateImage = true;
                     }
                 #endif
                 // Passe à travers les différentes Palettes de couleurs avec la touche B
@@ -438,12 +478,14 @@ int main(int argc, char *argv[]) {
                         case HOT_COLD:
                             colorScheme = WHITE_BLACK;
                             generate_palette_white_black();
-                            redrawAllAuto = true;
+                            redrawInterface = true;
+                            queryCalculateImage = true;
                             break;
                         case WHITE_BLACK:
                             colorScheme = HOT_COLD;
                             generate_palette_hot_cold();
-                            redrawAllAuto = true;
+                            redrawInterface = true;
+                            queryCalculateImage = true;
                             break;
                     }
                 }
@@ -463,14 +505,6 @@ int main(int argc, char *argv[]) {
                 }
             }
             
-            // Gestion du clic droit glissé à l'appui et le clic droit simple
-            if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_RIGHT && !menuMode && initialClickDone) {
-                rightSelecting = true;
-                rightDragging = false;
-                selectStart.x = event.button.x;
-                selectStart.y = event.button.y;
-                selectEnd = selectStart;
-            }
             // Gestion du clic gauche glissé à l'appui
             if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT && !menuMode && initialClickDone) {
                 leftSelecting = true;
@@ -505,6 +539,15 @@ int main(int argc, char *argv[]) {
                     redrawInterface = true;
                 }
             }
+            
+            // Gestion du clic droit glissé à l'appui et le clic droit simple
+            if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_RIGHT && !menuMode && initialClickDone) {
+                rightSelecting = true;
+                rightDragging = false;
+                selectStart.x = event.button.x;
+                selectStart.y = event.button.y;
+                selectEnd = selectStart;
+            }
             // Gestion du clic droit simple
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && rightSelecting && !rightDragging) {
                 rightSelecting = false;
@@ -514,6 +557,7 @@ int main(int argc, char *argv[]) {
                 selectEnd.x = event.motion.x;
                 selectEnd.y = event.motion.y;
                 rightDragging = true;
+                redrawInterface = true;
             }
             // Gestion du clic droit glissé, lorsqu'on lache
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && rightDragging) {
@@ -538,7 +582,7 @@ int main(int argc, char *argv[]) {
                 }
                 
                 redrawInterface = true;
-                redrawAllIfMovement = true;
+                queryCalculateImage = true;
             }
             
             // Gestion de l'actualisation de la taille de la texture au changement de taille d'écran
@@ -570,9 +614,14 @@ int main(int argc, char *argv[]) {
                 // 4. Nettoyer
                 SDL_SetRenderTarget(renderer, NULL);
                 SDL_DestroyTexture(oldTexture);
+                
+                // Actualiser la taille de la map d'itérations
+                free(task.iterationMap);
+                task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
 
                 initialClickDone = true;
-                redrawAllAuto = true;
+                redrawInterface = true;
+                queryCalculateImage = true;
             }
 
             // Si le menu d'entrée du nombre max d'itérations est activé, on surveille les inputs liés
@@ -598,20 +647,19 @@ int main(int argc, char *argv[]) {
                         max_iteration = atoi(inputBuffer);
                         menuMode = no_menu;
                         SDL_StopTextInput();
-                        redrawAllAuto = true;
+                        queryCalculateImage = true;
                     } else if (event.key.keysym.sym == SDLK_BACKSPACE && strlen(inputBuffer) > 0) {
                         inputBuffer[strlen(inputBuffer) - 1] = '\0';
                         stringModified = true;
                     } else if (event.key.keysym.sym == SDLK_ESCAPE) {
                         menuMode = no_menu;
                         SDL_StopTextInput();
-                        redrawAllIfMovement = true;
+                        redrawInterface = true;
                     }
                 } else {
                     redrawInterface = false;
-                    redrawAllIfMovement = false;
-                    redrawAllAuto = false;
-                    redrawAll = false;
+                    queryCalculateImage = false;
+                    calculateImage = false;
                 }
                 
                 // Si chaine de caractères modifiée, on redessine avec le texte à jour
@@ -630,6 +678,10 @@ int main(int argc, char *argv[]) {
         
         }
         */
+
+        if (queryCalculateImage && activateAutoRefresh) {
+            calculateImage = true;
+        }
 
         // Si l'utilisateur n'a pas encore cliqué après le redimensionnement, on ne redessine pas la fractale
         if (!initialClickDone) {
@@ -651,74 +703,68 @@ int main(int argc, char *argv[]) {
             render_text(renderer, font, "Cliquez pour réactiver...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
             SDL_RenderPresent(renderer);
             redrawInterface = false;
-            redrawAllIfMovement = false;
-            redrawAllAuto = false;
-            redrawAll = false;
+            queryCalculateImage = false;
+            calculateImage = false;
+            
+            drawingMade = true;
+        }
+
+
+
+        // Si on modifie la vue et qu'on demande un recalcul, ou qu'on force un recalcul
+        if (calculateImage) {
+
+            // Sélectionne l'écran comme cible            
+            SDL_SetRenderTarget(renderer, NULL);
+
+            // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
+            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
+            
+            // Pour afficher le message du chargement
+            render_text(renderer, font, "Chargement en cours...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
+            
+            // Affiche le résultat pour prévenir du chargement
+            SDL_RenderPresent(renderer);
+            
+            
+            task.max_iteration = max_iteration;
+            task.zoom = zoom;
+            task.offsetX = offsetX;
+            task.offsetY = offsetY;
+            task.width = windowWidth;
+            task.height = windowHeight;
+            task.antialiasing = activateAntialiasing;
+
+            SDL_Thread* thread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+
+            int thread_return;
+            SDL_WaitThread(thread, &thread_return);
+            
+            // Sélectionne la texture comme cible SDL
+            SDL_SetRenderTarget(renderer, fractalTexture);
+            
+            // Avec les itérations calculées, on fait maintenant le rendu en couleur sur la texture
+            render_iterations(renderer, task.iterationMap, windowWidth, windowHeight, palette, max_iteration, task.actual_max, activateAntialiasing);
+            
+            // Dessine la texture sur l'écran, comme elle vient d'être redessinnée pas besoin de l'ajuster auparavant
+            SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
+            
+            // Sauvegarde les dernière valeurs de zoom et d'offset
+            lastZoom = zoom;
+            lastOffsetX = offsetX;
+            lastOffsetY = offsetY;
+            
+            drawingMade = true;
         }
 
         // Si on demande à redessiner le tout
-        if ((redrawInterface || redrawAllIfMovement || redrawAllAuto || redrawAll) && !rightDragging) {
+        if (redrawInterface || calculateImage) {
         
-            // Si on effectue un zoom ou qu'on force le recalcul
-            if (((((zoom != lastZoom || offsetX != lastOffsetX || offsetY != lastOffsetY) && redrawAllIfMovement) || redrawAllAuto) && activateAutoRefresh) || redrawAll) {
+            SDL_SetRenderTarget(renderer, NULL);
 
-                // Sélectionne l'écran comme cible            
-                SDL_SetRenderTarget(renderer, NULL);
-
-                // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
-                draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
-                
-                // Pour afficher le message du chargement
-                render_text(renderer, font, "Chargement en cours...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
-                
-                // Affiche le résultat pour prévenir du chargement
-                SDL_RenderPresent(renderer);
-                
-                
-                // Sélectionner la texture comme cible
-                SDL_SetRenderTarget(renderer, fractalTexture);
-                
-                /*
-                pthread_t fractalThread;
-                if (pthread_create(&fractalThread, NULL, compute_fractal, (void*)&params) != 0) {
-                    fprintf(stderr, "Erreur lors de la création du thread.\n");
-                    return 1;
-                }
-                */
-                
-                // Calculer et dessiner la fractale sur la texture existante        
-                // Version complexe seulement dans la version linx
-                #ifdef __linux__
-                    if (advancedMode) {
-                        draw_mandelbrot_high_precision(renderer, fractalTexture, max_iteration, zoom, offsetX, offsetY, windowWidth, windowHeight, activateAntialiasing);
-                    } else {
-                        draw_mandelbrot_normal(renderer, fractalTexture, max_iteration, zoom, offsetX, offsetY, windowWidth, windowHeight, activateAntialiasing);
-                    }
-                #else
-                    draw_mandelbrot_normal(renderer, fractalTexture, max_iteration, zoom, offsetX, offsetY, windowWidth, windowHeight, activateAntialiasing);
-                #endif
-                
-                // Sélectionne l'écran comme cible
-                SDL_SetRenderTarget(renderer, NULL);
-                
-                // Dessine la texture sur l'écran, comme elle vient d'être redessinnée pas besoin de l'ajuster auparavant
-                SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
-                
-                // Sauvegarde les dernière valeurs de zoom et d'offset
-                lastZoom = zoom;
-                lastOffsetX = offsetX;
-                lastOffsetY = offsetY;
-            
-            // Va zoomer sur la texture sans recalcul
-            } else {
-                
-                // Sélectionne l'écran comme cible
-                SDL_SetRenderTarget(renderer, NULL);
-
-                // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
-                draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
-            }
-            
+            // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
+            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
+        
             // Pour afficher les messages
             if (!hideInterface) {
             
@@ -771,15 +817,9 @@ int main(int argc, char *argv[]) {
                 render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
             }
             
-            // Affiche le tout
-            SDL_RenderPresent(renderer);
-            
-            // Plus besoin de redessiner
-            redrawInterface = false;
-            redrawAllIfMovement = false;
-            redrawAllAuto = false;
-            redrawAll = false;
+            drawingMade = true;
         }
+
         
         // Si on sélectionne une zone
         if (rightDragging) {
@@ -798,16 +838,27 @@ int main(int argc, char *argv[]) {
             rect.w = abs(selectEnd.x - selectStart.x);
             rect.h = abs(selectEnd.y - selectStart.y);
             SDL_RenderDrawRect(renderer, &rect);
-            
-            // Afficher le résultat
-            SDL_RenderPresent(renderer);
         }
+        
+        // Si on a dessiné sur l'écran, l'afficher
+        if (drawingMade) {
+            SDL_SetRenderTarget(renderer, NULL);
+            SDL_RenderPresent(renderer);
+            drawingMade = false;
+        }
+        
+        // On réinitialise les demandes de dessin
+        redrawInterface = false;
+        queryCalculateImage = false;
+        calculateImage = false;
+        
+        firstExecution = false;
         
         // Evite enormément de lag en ne consommant pas trop de cycles processeur
         SDL_Delay(10);
-        
-        firstExecution = false;
     }
+
+    free(task.iterationMap);
 
     // Ferme les polices d'écriture
     TTF_CloseFont(font);
@@ -870,69 +921,83 @@ bool pop_view(double *zoom, double *offsetX, double *offsetY) {
 
 
 
-// Dessine la texture du Mandelbrot dans l'objet SDL précédemment sélectionné
-void draw_mandelbrot_normal(SDL_Renderer *renderer, SDL_Texture *texture, int max_iteration, double zoom, double offsetX, double offsetY, int width, int height, bool antialiasing) {
+// Calcule le nombre d'itérations de chaque pixels
+int calculate_iterations(void* arg) {
+    FractalTask* task = (FractalTask*)arg;
 
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
+    int w = task->width;
+    int h = task->height;
+    int total = w * h;
+    int done = 0;
 
-    int actual_max = 0;
+    task->actual_max = 0;
 
-    // 1ère passe : calcul des itérations et stockage des valeurs pour chaque pixel
-    int *iterationMap = malloc(width * height * sizeof(int));  // Utilisation d'un tableau à une dimension
-    for (int py = 0; py < height; py++) {
-        for (int px = 0; px < width; px++) {
-            double x0 = (px - width / 2.0) / zoom + offsetX;
-            double y0 = (py - height / 2.0) / zoom + offsetY;
+    task->finished = false;
+    task->progress = 0;
+
+    for (int py = 0; py < h; py++) {
+        for (int px = 0; px < w; px++) {
+            double x0 = (px - w / 2.0) / task->zoom + task->offsetX;
+            double y0 = (py - h / 2.0) / task->zoom + task->offsetY;
 
             double x = 0.0, y = 0.0;
             int iteration = 0;
 
-            while (x * x + y * y <= 4.0 && iteration < max_iteration) {
+            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
                 double xtemp = x * x - y * y + x0;
                 y = 2.0 * x * y + y0;
                 x = xtemp;
                 iteration++;
             }
 
-            iterationMap[py * width + px] = iteration;
-            if (iteration > actual_max) {
-                actual_max = iteration;
-            }
+            task->iterationMap[py * w + px] = iteration;
+            if (iteration > task->actual_max)
+                task->actual_max = iteration;
+
+            done++;
         }
+        // Mettre à jour la progression une fois par ligne
+        task->progress = (done * 100) / total;
     }
 
-    // 2ème passe : rendu avec interpolation pour l'anticrénelage
-    for (int py = 0; py < height; py++) {
-        for (int px = 0; px < width; px++) {
+    task->finished = true;
+    return 0;
+}
+
+
+// Fait le rendu en couleurs des itérations sur la cible SDL
+void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing) {
+
+    for (int py = 0; py < h; py++) {
+        for (int px = 0; px < w; px++) {
             int iteration;
 
             if (antialiasing) {
                 // Antialiasing activé : moyenne avec les pixels voisins
-                int neighboringIterations = iterationMap[py * width + px];
+                int neighboringIterations = iterationMap[py * w + px];
                 int count = 1;
 
                 if (px > 0) {
-                    neighboringIterations += iterationMap[py * width + (px - 1)];
+                    neighboringIterations += iterationMap[py * w + (px - 1)];
                     count++;
                 }
-                if (px < width - 1) {
-                    neighboringIterations += iterationMap[py * width + (px + 1)];
+                if (px < w - 1) {
+                    neighboringIterations += iterationMap[py * w + (px + 1)];
                     count++;
                 }
                 if (py > 0) {
-                    neighboringIterations += iterationMap[(py - 1) * width + px];
+                    neighboringIterations += iterationMap[(py - 1) * w + px];
                     count++;
                 }
-                if (py < height - 1) {
-                    neighboringIterations += iterationMap[(py + 1) * width + px];
+                if (py < h - 1) {
+                    neighboringIterations += iterationMap[(py + 1) * w + px];
                     count++;
                 }
 
                 iteration = neighboringIterations / count;
             } else {
                 // Antialiasing désactivé : on utilise la valeur brute
-                iteration = iterationMap[py * width + px];
+                iteration = iterationMap[py * w + px];
             }
 
             // On va sélectionner la couleur de chaque pixel depuis la palette pré-générée
@@ -946,8 +1011,6 @@ void draw_mandelbrot_normal(SDL_Renderer *renderer, SDL_Texture *texture, int ma
             SDL_RenderDrawPoint(renderer, px, py);
         }
     }
-
-    free(iterationMap);  // Libération de la mémoire
 }
 
 
