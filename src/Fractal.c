@@ -456,6 +456,7 @@ int main(int argc, char *argv[]) {
                 // Toggle pour activer/désactiver l'antialiasing avec la touche J
                 if (event.key.keysym.sym == SDLK_j && !menuMode && initialClickDone) {
                     activateAntialiasing = !activateAntialiasing;
+                    redrawInterface = true;
                     queryCalculateImage = true;
                 }
                 // Toggle pour activer/désactiver l'autorefresh de l'image du mandelbrot avec la touche R
