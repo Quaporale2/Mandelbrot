@@ -59,9 +59,6 @@ $(WIN_OUTPUT): $(WIN_OBJS) $(ICON_RES)
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) -c $< $(CFLAGS) -o $@
 
-# Autoriser le script linux en éxécution
-chmod +x $(realpath $(LINUX_OUTPUT))
-
 # Compilation Windows
 $(OBJDIR)/%.win.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(WIN_CC) -c $< $(WIN_CFLAGS) -o $@
@@ -78,8 +75,8 @@ clean:
 
 # Installe l'icone pour les systèmes linux
 install-icon-linux:
-	sed "s|__DIR__|$(realpath .)|g" Fractal.desktop | sed "s|__EXEC__|$(LINUX_OUTPUT)|g" > ~/.local/share/applications/fractal.desktop
-	chmod +x ~/.local/share/applications/fractal.desktop
+	sed "s|__DIR__|$(realpath .)|g" Fractal.desktop | sed "s|__EXEC__|$(LINUX_OUTPUT)|g" > /tmp/fractal.Desktop
+	sudo cp /tmp/fractal.Desktop /usr/share/applications/fractal.desktop
 
 
 
