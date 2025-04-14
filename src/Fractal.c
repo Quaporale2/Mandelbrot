@@ -186,6 +186,9 @@ int main(int argc, char *argv[]) {
     int windowWidth = 1200;
     int windowHeight = 800;
     
+    //int lastWindowWidth = windowWidth;
+    //int lastWindowHeight = windowHeight;
+    
     // Taille minimale de la fenêtre
     const int minWindowWidth = 500;
     const int minWindowHeight = 400;
@@ -651,6 +654,9 @@ int main(int argc, char *argv[]) {
                 // Actualiser la taille de la map d'itérations
                 free(task.iterationMap);
                 task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
+                
+                //lastWindowWidth = windowWidth;
+                //lastWindowHeight = windowHeight;
 
                 initialClickDone = true;
                 redrawInterface = true;
@@ -660,44 +666,84 @@ int main(int argc, char *argv[]) {
             // Si le menu d'entrée du nombre max d'itérations est activé, on surveille les inputs liés
             if (menuMode) {
             
-                // Si on a entré du texte
                 if (event.type == SDL_TEXTINPUT) {
                     if (strlen(inputBuffer) + strlen(event.text.text) < sizeof(inputBuffer) - 1) {
-                        // N'ajoute que les chiffres
+                    
                         for (int i = 0; event.text.text[i]; i++) {
-                            if (isdigit(event.text.text[i])) {
-                                int len = strlen(inputBuffer);
-                                inputBuffer[len] = event.text.text[i];
-                                inputBuffer[len + 1] = '\0';
+                            char c = event.text.text[i];
+                            size_t len = strlen(inputBuffer);
+
+                            bool hasDotOrComma = strchr(inputBuffer, '.') || strchr(inputBuffer, ',');
+                            bool hasDigit = false;
+                            for (size_t j = 0; j < len; j++) {
+                                if (isdigit(inputBuffer[j])) {
+                                    hasDigit = true;
+                                    break;
+                                }
                             }
+
+                            if (isdigit(c)) {
+                                inputBuffer[len] = c;
+                                inputBuffer[len + 1] = '\0';
+                                inputStringModified = true;
+                                redrawImage = true;
+                            }
+                            else if ((c == '.' || c == ',') && !hasDotOrComma && hasDigit) {
+                                inputBuffer[len] = (c == ',') ? '.' : c; // Remplace la virgule par un point pour atof
+                                inputBuffer[len + 1] = '\0';
+                                inputStringModified = true;
+                                redrawImage = true;
+                            }
+                            else if (c == '-' && len == 0) {
+                                inputBuffer[0] = '-';
+                                inputBuffer[1] = '\0';
+                                inputStringModified = true;
+                                redrawImage = true;
+                            }
+                            // Sinon : caractère ignoré
                         }
                     }
-                    inputStringModified = true;
-                    redrawImage = true;
-                
-                } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_RETURN && strlen(inputBuffer) > 0) {
-                
-                    switch (menuMode) {
-                        case max_iteration_menu:
-                            max_iteration = atoi(inputBuffer);
-                            break;
-                        case zoom_menu:
-                            zoom = atof(inputBuffer);
-                            break;
-                        case offsetX_menu:
-                            offsetX = atof(inputBuffer);
-                            break;
-                        case offsetY_menu:
-                            offsetY = atof(inputBuffer);
-                            break;
-                    }
- 
-                    menuMode = no_menu;
-                    SDL_StopTextInput();
                     
-                    redrawInterface = true;
-                    queryCalculateImage = true;
-                
+                } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_RETURN && strlen(inputBuffer) > 0) {
+
+                    // Remplace les virgules résiduelles par des points (sécurité supplémentaire)
+                    for (int i = 0; inputBuffer[i]; i++) {
+                        if (inputBuffer[i] == ',') {
+                            inputBuffer[i] = '.';
+                        }
+                    }
+
+                    // Conversion sécurisée avec strtod
+                    char *endptr;
+                    double value = strtod(inputBuffer, &endptr);
+
+                    if (*endptr == '\0') {  // conversion réussie
+
+                        switch (menuMode) {
+                            case max_iteration_menu:
+                                if ((int)(value + 0.5) < 1) {
+                                    value = 1;
+                                }
+                                max_iteration = (int)(value + 0.5);  // arrondi au plus proche
+                                break;
+                            case zoom_menu:
+                                zoom = value;
+                                break;
+                            case offsetX_menu:
+                                offsetX = value;
+                                break;
+                            case offsetY_menu:
+                                offsetY = value;
+                                break;
+                        }
+
+                        menuMode = no_menu;
+                        SDL_StopTextInput();
+
+                        redrawInterface = true;
+                        queryCalculateImage = true;
+                    }
+                    // Sinon : valeur invalide, on sort sans rien faire
                 } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_BACKSPACE && strlen(inputBuffer) > 0) {
                 
                     inputBuffer[strlen(inputBuffer) - 1] = '\0';
@@ -815,15 +861,30 @@ int main(int argc, char *argv[]) {
         }
 
         if (redrawImage || redrawInterface || calculateImage) {
-        
             // Sélectionne l'écran comme cible SDL
             SDL_SetRenderTarget(renderer, NULL);
+        /*
+            double offsetXtemp = offsetX;
+            double offsetYtemp = offsetY;
 
-            // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
-            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
+            // Si la taille de fenêtre a changé, on ajuste dynamiquement l'offset pour garder le centre fractal fixe
+            if (lastWindowWidth != windowWidth || lastWindowHeight != windowHeight) {
+                offsetXtemp = offsetX + (lastWindowWidth - windowWidth) / (2.0 * zoom);
+                offsetYtemp = offsetY + (lastWindowHeight - windowHeight) / (2.0 * zoom);
+            }
+
+            // Dessine avec les offsets temporaires
+            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
+                                         lastZoom, lastOffsetX, lastOffsetY, offsetXtemp, offsetYtemp);
+        */
+        
+            // Dessine avec les offsets temporaires
+            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
+                                         lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
 
             drawingMade = true;
         }
+
 
         // Pour redessiner l'interface
         if ((redrawInterface || calculateImage) && !hideInterface && drawingMade) {
@@ -872,12 +933,12 @@ int main(int argc, char *argv[]) {
                     break;
             }
             
-            render_text(renderer, font, "Clic droit/gauche glissé & flèches directionnelles pour naviguer", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "I pour entrer une nouvelle valeur d'itérations max", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Espace pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Clic droit/flèches directionnelles pour déplacer", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Molette/clic gauche glissé/+&- pour zoomer/dézoomer", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Espace/Clic molette pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
             render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
             render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY  I: Itération max", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
 
             // Si on sélectionne une zone
             if (rightDragging) {
