@@ -186,8 +186,8 @@ int main(int argc, char *argv[]) {
     int windowWidth = 1200;
     int windowHeight = 800;
     
-    //int lastWindowWidth = windowWidth;
-    //int lastWindowHeight = windowHeight;
+    int lastWindowWidth = windowWidth;
+    int lastWindowHeight = windowHeight;
     
     // Taille minimale de la fenêtre
     const int minWindowWidth = 500;
@@ -655,8 +655,8 @@ int main(int argc, char *argv[]) {
                 free(task.iterationMap);
                 task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
                 
-                //lastWindowWidth = windowWidth;
-                //lastWindowHeight = windowHeight;
+                lastWindowWidth = windowWidth;
+                lastWindowHeight = windowHeight;
 
                 initialClickDone = true;
                 redrawInterface = true;
@@ -863,7 +863,7 @@ int main(int argc, char *argv[]) {
         if (redrawImage || redrawInterface || calculateImage) {
             // Sélectionne l'écran comme cible SDL
             SDL_SetRenderTarget(renderer, NULL);
-        /*
+
             double offsetXtemp = offsetX;
             double offsetYtemp = offsetY;
 
@@ -874,13 +874,8 @@ int main(int argc, char *argv[]) {
             }
 
             // Dessine avec les offsets temporaires
-            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
+            draw_mandelbrot_well_placed(renderer, fractalTexture, lastWindowWidth, lastWindowHeight, zoom,
                                          lastZoom, lastOffsetX, lastOffsetY, offsetXtemp, offsetYtemp);
-        */
-        
-            // Dessine avec les offsets temporaires
-            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
-                                         lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
 
             drawingMade = true;
         }
