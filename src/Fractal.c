@@ -20,7 +20,9 @@
 // Pour la librairie graphique SDL
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+
 #include <SDL_ttf.h>
+
 
 // Pour les calculs de haute précisions
 // Seulement pour la version linux
@@ -109,6 +111,11 @@ int historyIndex = -1;
 SDL_Color palette[PALETTE_SIZE];
 
 
+// Pour la police d'écriture
+extern unsigned char DejaVuSans_ttf[];
+extern unsigned int DejaVuSans_ttf_len;
+
+
 
 // Gestion des palette de couleurs du Mandelbrot
 void generate_palette_hot_cold();
@@ -140,6 +147,23 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
 
 // Dessine le texte passé en paramètre
 void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
+
+
+
+TTF_Font* load_font_from_memory(int size) {
+    SDL_RWops* rw = SDL_RWFromConstMem(DejaVuSans_ttf, DejaVuSans_ttf_len);
+    if (!rw) {
+        SDL_Log("Erreur SDL_RWFromConstMem: %s", SDL_GetError());
+        return NULL;
+    }
+
+    TTF_Font* font = TTF_OpenFontRW(rw, 1, size); // '1' = SDL gère la libération de rw
+    if (!font) {
+        SDL_Log("Erreur TTF_OpenFontRW: %s", TTF_GetError());
+    }
+
+    return font;
+}
 
 
 
@@ -194,7 +218,7 @@ int main(int argc, char *argv[]) {
     const char windowName[] = "Fractale Mandelbrot";
 
     // Chemin police d'écriture
-    const char fontPath[] = "DejaVuSans.ttf";
+    //const char fontPath[] = "DejaVuSans.ttf";
 
     // Si est à 0, on sort du programme
     bool running = true;
@@ -249,7 +273,7 @@ int main(int argc, char *argv[]) {
     
     // Initialise la police d'écriture
     TTF_Init();
-    TTF_Font *font = TTF_OpenFont(fontPath, (int)(8 + windowWidth * 0.006));
+    TTF_Font *font = load_font_from_memory((int)(8 + windowWidth * 0.006));
     if (!font) {
         SDL_Log("Erreur chargement police d'écriture : %s", TTF_GetError());
         return 1;
@@ -337,7 +361,7 @@ int main(int argc, char *argv[]) {
 
                 // Ferme puis réouvre la police d'écriture à la bonne taille pour la nouvelle taille de la fenêtre
                 TTF_CloseFont(font);
-                font = TTF_OpenFont(fontPath, (int)(8 + windowWidth * 0.006));
+                font = load_font_from_memory((int)(8 + windowWidth * 0.006));
                 if (!font) {
                     SDL_Log("Erreur chargement police d'écriture : %s", TTF_GetError());
                     return 1;
@@ -1069,6 +1093,9 @@ int main(int argc, char *argv[]) {
     
     return 0;
 }
+
+
+
 
 
 
