@@ -7,5 +7,5 @@ git add .
 git commit -m "MAJ"
 
 # Pousse les modifications au rrepository Github
-git push
+git push --tags
 
