@@ -65,6 +65,7 @@ int historyIndex = -1;
 // Pour la séparation en un deuxième thread lors du calcul
 typedef struct {
     int *iterationMap;
+    int *iterationMapBis;
     int max_iteration;
     int *actual_max;
     double zoom, offsetX, offsetY;
@@ -73,6 +74,8 @@ typedef struct {
 
     int *progress;  // De 0 à 100
     bool *finished;
+    
+    bool shouldStop;
 } FractalTask;
 
 
@@ -118,6 +121,15 @@ extern unsigned int DejaVuSans_ttf_len;
 
 
 
+// Chaine de pointeurs pour la liste de textures
+typedef struct FractalList {
+    void* texture;
+    struct FractalList* next;
+    double zoom, logZoom, offsetX, offsetY;
+} FractalList;
+
+
+
 // Charge une police d'écriture depuis la mémoire (un fichier .c)
 TTF_Font* load_font_from_memory(int size);
 
@@ -129,6 +141,10 @@ void generate_palette_rainbow();
 // Gestion de l'historique de position de l'image
 void push_view(double zoom, double offsetX, double offsetY);
 bool pop_view(double *zoom, double *offsetX, double *offsetY);
+
+// Gestion création et suppression de texture de la liste
+FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY);
+FractalList* pop_texture(FractalList** head);
 
 // Dessine le texte passé en paramètre
 void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
@@ -146,7 +162,7 @@ int calculate_iterations(void* arg);
 void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
-void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY);
+void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool frameRectOn);
 
 
 
@@ -160,6 +176,9 @@ int main(int argc, char *argv[]) {
     
     // Indique si on cache le texte ou non
     bool hideInterface = false;
+    
+    // Indique si on veut afficher un bord blanc autour des textures
+    bool frameRectOn = false;
     
     // Active ou non l'antialiasing du Mandelbrot
     bool activateAntialiasing = true;
@@ -213,10 +232,10 @@ int main(int argc, char *argv[]) {
     double lastZoom = zoom;
     double lastOffsetX = offsetX;
     double lastOffsetY = offsetY;
+    
     double lastZoomSave = zoom;
     double lastOffsetXSave = offsetX;
     double lastOffsetYSave = offsetY;
-
     
     // Variables permettant de suivre les demandes de dessin
     bool redrawInterface = false;
@@ -224,7 +243,6 @@ int main(int argc, char *argv[]) {
     bool calculateImage = true;
     bool drawingMade = false;
     bool redrawImage = false;
-    
     bool redrawLoading = false;
     
     // Après modification de taille de la fenêtre, indique si on attend le clic de déblocage
@@ -254,12 +272,59 @@ int main(int argc, char *argv[]) {
     
     bool renderIterations = false;
     
+    bool newIterationsCalculated = false;
+    
+    
+    int actual_max = 0;
+    int progress = 0;
+    int lastProgress = 0;
+    bool finished = false;
+    
+    FractalTask task;
+    task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
+    task.iterationMapBis = malloc(windowWidth * windowHeight * sizeof(int));
+    if (task.iterationMap == NULL || task.iterationMapBis == NULL) {
+        SDL_Log("Erreur d'allocation mémoire pour la map des itérations.");
+        exit(EXIT_FAILURE);
+    }
+    task.max_iteration = 0;
+    task.actual_max = &actual_max;
+    task.zoom = 0;
+    task.offsetX = 0;
+    task.offsetY = 0;
+    task.width = 0;
+    task.height = 0;
+    task.antialiasing = false;
+    task.progress = &progress;
+    task.finished = &finished;
+    task.shouldStop = false;
+
+    SDL_Thread* currentCalcThread = NULL;
+
+    // Génère la palette de couleurs qui va servir à colorer le mandelbrot
+    switch (colorScheme) {
+        case HOT_COLD:
+            generate_palette_hot_cold();
+            break;
+        case WHITE_BLACK:
+            generate_palette_white_black();
+            break;
+        case RAINBOW:
+            generate_palette_rainbow();
+    }
+    
+    
+    // La liste de textures calculées du fractal
+    FractalList* fractalList = NULL;
+    FractalList *newFractalElement = NULL;
+    
+    
     // Initialise la police d'écriture
     TTF_Init();
     TTF_Font *font = load_font_from_memory((int)(8 + windowWidth * 0.006));
     if (!font) {
         SDL_Log("Erreur chargement police d'écriture : %s", TTF_GetError());
-        return 1;
+        exit(EXIT_FAILURE);
     }
 
     // Initialise le moteur graphique et la fenêtre
@@ -273,41 +338,15 @@ int main(int argc, char *argv[]) {
 
     // Ce qui va contenir tout la texture de la fractale
     SDL_Texture *fractalTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, windowWidth, windowHeight);
-
+    if (fractalTexture == NULL) {
+        SDL_Log("Erreur lors de la création de la texture initiale : %s", SDL_GetError());
+        exit(EXIT_FAILURE);
+    }
+    
     // Contient les évenement de la fenêtre
     SDL_Event event;
     
     
-    int actual_max = 0;
-    int progress = 0;
-    int lastProgress = 0;
-    bool finished = false;
-    
-    FractalTask task;
-    task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
-    task.max_iteration = 0;
-    task.actual_max = &actual_max;
-    task.zoom = 0;
-    task.offsetX = 0;
-    task.offsetY = 0;
-    task.width = 0;
-    task.height = 0;
-    task.antialiasing = false;
-    task.progress = &progress;
-    task.finished = &finished;
-
-
-    // Génère la palette de couleurs qui va servir à colorer le mandelbrot
-    switch (colorScheme) {
-        case HOT_COLD:
-            generate_palette_hot_cold();
-            break;
-        case WHITE_BLACK:
-            generate_palette_white_black();
-            break;
-        case RAINBOW:
-            generate_palette_rainbow();
-    }
 
 
     // Boucle principale d'éxécution
@@ -319,9 +358,10 @@ int main(int argc, char *argv[]) {
             static bool openingMenu = false;
         
             // Si on ferme la page
-            if (event.type == SDL_QUIT)
+            if (event.type == SDL_QUIT) {
+                task.shouldStop = true;
                 running = false;
-                
+            }
             // Evenement lorsqu'on change la taille de la fenêtre
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED && !firstExecution) {
                 windowWidth = event.window.data1;
@@ -510,6 +550,11 @@ int main(int argc, char *argv[]) {
                         activateAutoRefresh = !activateAutoRefresh;
                         redrawInterface = true;
                         break;
+                    case SDLK_l:
+                        // Toggle pour activer/désactiver l'autorefresh de l'image du mandelbrot avec la touche R
+                        frameRectOn = !frameRectOn;
+                        redrawInterface = true;
+                        break;
                     #ifdef __linux__
                         case SDLK_m:
                             // Précision complexe seulement dans la version linux avec la touche M
@@ -639,6 +684,11 @@ int main(int argc, char *argv[]) {
                 initialClickDone = true;
                 redrawInterface = true;
                 queryCalculateImage = true;
+            }
+            
+            // Pour annuler le chargement d'une image 
+            if (fractalCalcPending && event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
+                task.shouldStop = true;
             }
 
             // Si le menu d'entrée du nombre max d'itérations est activé, on surveille les inputs liés
@@ -770,18 +820,25 @@ int main(int argc, char *argv[]) {
             // Calcul terminé
             if (finished) {
             
-                // On lance le rendu en couleur des calculs
-                renderIterations = true;
+                // Si le calcul n'a pas été aborti prématurément
+                if (!task.shouldStop) {
                 
-                lastZoom = lastZoomSave;
-                lastOffsetX = lastOffsetXSave;
-                lastOffsetY = lastOffsetYSave;
-  
+                    // On lance le rendu en couleur des calculs
+                    renderIterations = true;
+                    
+                    lastZoomSave = lastZoom;
+                    lastOffsetXSave = lastOffsetX;
+                    lastOffsetYSave = lastOffsetY;
+                } else {
+                    newIterationsCalculated = false;
+                }
+                
                 redrawInterface = true;    
                 fractalCalcPending = false;  
                 redrawLoading = false;     
             }
         }
+        
         
         // Avec les itérations calculées, on fait maintenant le rendu en couleur sur la texture
         if (renderIterations) {
@@ -794,6 +851,35 @@ int main(int argc, char *argv[]) {
             
             // Dessine la texture sur l'écran, comme elle vient d'être redessinnée pas besoin de l'ajuster auparavant
             SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
+            
+            // Si on fait le rendu après le calcul des itérations
+            if (newIterationsCalculated) {
+            
+                // Pousse la nouvelle texture dans la liste
+                newFractalElement = push_texture(&fractalList, log10(zoom), lastZoom, lastOffsetX, lastOffsetY);
+                
+                int textureWidth, textureHeight;
+                SDL_QueryTexture(fractalTexture, NULL, NULL, &textureWidth, &textureHeight);
+                newFractalElement->texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, textureWidth, textureHeight);
+                if (newFractalElement->texture == NULL) {
+                    SDL_Log("Erreur lors de la création de la texture dans la liste : %s", SDL_GetError());
+                    exit(EXIT_FAILURE);
+                }
+                
+                // Sauvegarde la cible de rendu actuelle
+                SDL_Texture* previousTarget = SDL_GetRenderTarget(renderer);
+
+                // Rend vers fractalList->texture
+                SDL_SetRenderTarget(renderer, newFractalElement->texture);
+
+                // Copie le contenu de fractalTexture dans fractalList->texture
+                SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
+
+                // Restaure la cible de rendu précédente
+                SDL_SetRenderTarget(renderer, previousTarget);
+                
+                newIterationsCalculated = false;
+            }
             
             renderIterations = false;
         }
@@ -808,13 +894,10 @@ int main(int argc, char *argv[]) {
         }
 
         // Si on modifie la vue et qu'on demande un recalcul, ou qu'on force un recalcul
-        if (calculateImage) {
+        if (calculateImage && running) {
 
             // Sélectionne l'écran comme cible            
             SDL_SetRenderTarget(renderer, NULL);
-
-            // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
-            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
             
             // 1. Sauvegarder l’ancienne texture et sa taille
             int oldW, oldH;
@@ -826,6 +909,10 @@ int main(int argc, char *argv[]) {
 
                 // 2. Créer la nouvelle texture avec la nouvelle taille
                 fractalTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, windowWidth, windowHeight);
+                if (fractalTexture == NULL) {
+                    SDL_Log("Erreur lors de la création de la texture pour redimensionnement fenêtre : %s", SDL_GetError());
+                    exit(EXIT_FAILURE);
+                }
 
                 // 3. Copier l’ancienne texture dedans, centrée
                 SDL_SetRenderTarget(renderer, fractalTexture);
@@ -847,7 +934,13 @@ int main(int argc, char *argv[]) {
 
                 // Actualiser la taille de la map d'itérations
                 free(task.iterationMap);
+                free(task.iterationMapBis);
                 task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
+                task.iterationMapBis = malloc(windowWidth * windowHeight * sizeof(int));
+                if (task.iterationMap == NULL || task.iterationMapBis == NULL) {
+                    SDL_Log("Erreur d'allocation mémoire pour la map des itérations.");
+                    exit(EXIT_FAILURE);
+                }
             }
             
             task.max_iteration = max_iteration;
@@ -857,15 +950,16 @@ int main(int argc, char *argv[]) {
             task.width = windowWidth;
             task.height = windowHeight;
             task.antialiasing = activateAntialiasing;
+            task.shouldStop = false;
 
             #ifdef __linux__
                 if (advancedMode) {
-                    SDL_CreateThread(calculate_iterations_high_precision, "CalcFractalThread", &task);
+                    currentCalcThread = SDL_CreateThread(calculate_iterations_high_precision, "CalcFractalThread", &task);
                 } else {
-                    SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+                    currentCalcThread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
                 }
             #else
-                SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+                currentCalcThread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
             #endif
             
 
@@ -874,19 +968,58 @@ int main(int argc, char *argv[]) {
             fractalCalcPending = true;
             lastProgress = 1000;
             
+            newIterationsCalculated = true;
+            
             // Sauvegarde les dernière valeurs de zoom et d'offset
-            lastZoomSave = zoom;
-            lastOffsetXSave = offsetX;
-            lastOffsetYSave = offsetY;
+            lastZoom = zoom;
+            lastOffsetX = offsetX;
+            lastOffsetY = offsetY;
         }
 
-        if (redrawImage || redrawInterface || calculateImage) {
+        if ((redrawImage || redrawInterface || calculateImage) && fractalList != NULL) {
+        
             // Sélectionne l'écran comme cible SDL
             SDL_SetRenderTarget(renderer, NULL);
 
-            // Dessine avec les offsets temporaires
-            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
-                                         lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
+            // Efface l'écran en noir
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // noir opaque
+            SDL_RenderClear(renderer);
+
+
+            FractalList* actualFractalList = fractalList;
+            double logCurrentZoom = log10(zoom);
+            while (actualFractalList != NULL) {
+            
+                // Si le zoom de la texture est trop grand par rapport au zoom actuel, on l'ignore
+                if (actualFractalList->logZoom - logCurrentZoom < 3) {
+                
+                    int textureWidth, textureheight;
+                    
+                    // Si la texture actuelle est celle qui vient d'être créée, alors on utilise la texture en mémoire
+                    // Pour afficher les modification de couleurs et d'antialiasing immédiatement
+                    if (actualFractalList == newFractalElement) {
+                    
+                        // Récupère la taille de la texture
+                        SDL_QueryTexture(fractalTexture, NULL, NULL, &textureWidth, &textureheight);
+
+                        // Dessine la dernière texture créée
+                        draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
+                                                    lastZoomSave, lastOffsetXSave, lastOffsetYSave, offsetX, offsetY, frameRectOn);
+                    
+                    // Sinon, on affiche celui dans la liste
+                    } else {
+                    
+                        // Récupère la taille de la texture
+                        SDL_QueryTexture(actualFractalList->texture, NULL, NULL, &textureWidth, &textureheight);
+
+                        // Dessine la texture de la liste
+                        draw_mandelbrot_well_placed(renderer, actualFractalList->texture, windowWidth, windowHeight, zoom,
+                                                    actualFractalList->zoom, actualFractalList->offsetX, actualFractalList->offsetY, offsetX, offsetY, frameRectOn);
+                    }
+                }
+                
+                actualFractalList = actualFractalList->next;
+            }
 
             drawingMade = true;
         }
@@ -910,14 +1043,6 @@ int main(int argc, char *argv[]) {
             render_text(renderer, font, displayBuffer, 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_LEFT);
 
             // Controles, bord bas droite
-            #ifdef __linux__
-                if (advancedMode) {
-                    render_text(renderer, font, "M pour toggle précision Normale/Haute:   HAUTE", windowWidth - 10, windowHeight - 10 * verticalSpacing, ORIGIN_UP_RIGHT);
-                } else {
-                    render_text(renderer, font, "M pour toggle précision Normale/Haute: NORMALE", windowWidth - 10, windowHeight - 10 * verticalSpacing, ORIGIN_UP_RIGHT);
-                }
-            #endif
-
             if (activateAntialiasing) {
                 render_text(renderer, font, "J pour toggle l'antialiasing:  ON", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
             } else {
@@ -929,32 +1054,43 @@ int main(int argc, char *argv[]) {
             } else {
                 render_text(renderer, font, "R pour toggle l'autorefresh: OFF", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
             }
+            
+            if (frameRectOn) {
+                render_text(renderer, font, "L pour toggle les frames autour des textures:  ON", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+            } else {
+                render_text(renderer, font, "L pour toggle les frames autour des textures: OFF", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+            }
 
             switch (colorScheme) {
                 case HOT_COLD:
-                    render_text(renderer, font, "B pour alterner les couleurs: CHAUD/FROID", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "B pour alterner les couleurs: CHAUD/FROID", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
                 case WHITE_BLACK:
-                    render_text(renderer, font, "B pour alterner les couleurs:  BLANC/NOIR", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "B pour alterner les couleurs:  BLANC/NOIR", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
                 case RAINBOW:
-                    render_text(renderer, font, "B pour alterner les couleurs: ARC-EN-CIEL", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "B pour alterner les couleurs: ARC-EN-CIEL", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
             }
             
-            render_text(renderer, font, "Clic droit/flèches directionnelles pour déplacer", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Molette/clic gauche glissé/+&- pour zoomer/dézoomer", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Espace/Clic molette pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY  I: Itération max", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Clic droit/flèches directionnelles pour déplacer", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Molette/clic gauche glissé/+&- pour zoomer/dézoomer", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Espace/Clic molette pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY  I: Itération max", windowWidth - 10, windowHeight - 10 * verticalSpacing, ORIGIN_UP_RIGHT);
+
+            #ifdef __linux__
+                if (advancedMode) {
+                    render_text(renderer, font, "M pour toggle précision Normale/Haute:   HAUTE", windowWidth - 10, windowHeight - 11 * verticalSpacing, ORIGIN_UP_RIGHT);
+                } else {
+                    render_text(renderer, font, "M pour toggle précision Normale/Haute: NORMALE", windowWidth - 10, windowHeight - 11 * verticalSpacing, ORIGIN_UP_RIGHT);
+                }
+            #endif
 
             // Si on sélectionne une zone
             if (rightDragging) {
 
-                // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
-                draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
-                
                 // Dessine le rectangle blanc de sélection
                 SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
                 SDL_Rect rect;
@@ -1062,7 +1198,18 @@ int main(int argc, char *argv[]) {
         SDL_Delay(10);
     }
 
+    // Vide la listes de textures
+    while (fractalList != NULL) {
+        fractalList = pop_texture(&fractalList);
+    }
+    
+    // On attend que le second thread ai bien terminé
+    SDL_WaitThread(currentCalcThread, NULL);
+    currentCalcThread = NULL;
+
+    // Libère la liste des itérations
     free(task.iterationMap);
+    free(task.iterationMapBis);
 
     // Ferme les polices d'écriture
     TTF_CloseFont(font);
@@ -1071,16 +1218,29 @@ int main(int argc, char *argv[]) {
     // Ferme SDL et libère la mémoire
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    SDL_DestroyTexture(fractalTexture);
     SDL_Quit();
     
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 
 
 
+// Charge une police d'écriture depuis la mémoire (un fichier .c)
+TTF_Font* load_font_from_memory(int size) {
+    SDL_RWops* rw = SDL_RWFromConstMem(DejaVuSans_ttf, DejaVuSans_ttf_len);
+    if (!rw) {
+        SDL_Log("Erreur SDL_RWFromConstMem: %s", SDL_GetError());
+        return NULL;
+    }
 
+    TTF_Font* font = TTF_OpenFontRW(rw, 1, size); // '1' = SDL gère la libération de rw
+    if (!font) {
+        SDL_Log("Erreur TTF_OpenFontRW: %s", TTF_GetError());
+    }
+
+    return font;
+}
 
 
 // Génère une palette de couleur allant dans couleurs froides au couleurs chaudes
@@ -1168,6 +1328,121 @@ bool pop_view(double *zoom, double *offsetX, double *offsetY) {
     return false;
 }
 
+// Ajoute un élément pour stocker une texture et ses propriétées dans la liste, au bon endroit
+FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY) {
+    FractalList* new_node = (FractalList*)malloc(sizeof(FractalList));
+    if (!new_node) {
+        SDL_Log("Erreur d'allocation mémoire pour la liste des textures de fractales.");
+        exit(EXIT_FAILURE);
+    }
+
+    new_node->texture = NULL;
+    new_node->zoom = zoom;
+    new_node->logZoom = logZoom;
+    new_node->offsetX = offsetX;
+    new_node->offsetY = offsetY;
+    new_node->next = NULL;
+
+    // Cas 1 : la liste est vide ou le zoom du nouveau < zoom de tête => insertion en tête
+    if (*head == NULL || zoom < (*head)->zoom) {
+        new_node->next = *head;
+        *head = new_node;
+        return new_node;
+    }
+
+    // Cas 2 : recherche du bon emplacement
+    FractalList* current = *head;
+    int incr = 0;
+    while (current->next != NULL && current->next->zoom <= zoom) {
+        current = current->next;
+        incr++;
+    }
+
+    // Insertion après current
+    new_node->next = current->next;
+    current->next = new_node;
+
+    return new_node;
+}
+
+// Supprime l'élément en tête
+FractalList* pop_texture(FractalList** head) {
+    if (*head == NULL) {
+        return NULL;
+    }
+
+    FractalList* temp = *head;
+    *head = temp->next;
+    if (temp->texture != NULL) {
+        SDL_DestroyTexture(temp->texture);
+    }
+    free(temp);
+    return *head;
+}
+
+
+// Dessine du texte blanc avec un fond gris arrondi semi-transparent
+void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin) {
+    SDL_Color color = {255, 255, 255, 255}; // Texte blanc
+    SDL_Surface *surface = TTF_RenderUTF8_Blended(font, text, color);
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+    if (texture == NULL) {
+        SDL_Log("Erreur lors de la création de la texture pour rendu texte : %s", SDL_GetError());
+        exit(EXIT_FAILURE);
+    }
+
+    int text_width = surface->w;
+    int text_height = surface->h;
+
+    // Ajuster les coordonnées en fonction de l’origine
+    switch (origin) {
+        case ORIGIN_UP_LEFT: break;
+        case ORIGIN_UP_CENTER: x -= text_width / 2; break;
+        case ORIGIN_UP_RIGHT: x -= text_width; break;
+        case ORIGIN_MIDDLE_LEFT: y -= text_height / 2; break;
+        case ORIGIN_MIDDLE_CENTER: x -= text_width / 2; y -= text_height / 2; break;
+        case ORIGIN_MIDDLE_RIGHT: x -= text_width; y -= text_height / 2; break;
+        case ORIGIN_DOWN_LEFT: y -= text_height; break;
+        case ORIGIN_DOWN_CENTER: x -= text_width / 2; y -= text_height; break;
+        case ORIGIN_DOWN_RIGHT: x -= text_width; y -= text_height; break;
+    }
+
+    SDL_Rect destRect = {x, y, text_width, text_height};
+
+    // Calcul de la boîte de fond
+    int padding = 4;
+    SDL_Rect bgRect = {
+        destRect.x - padding,
+        destRect.y - padding,
+        destRect.w + 2 * padding,
+        destRect.h + 2 * padding
+    };
+
+    // Sauvegarder la couleur actuelle
+    Uint8 r, g, b, a;
+    SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a);
+
+    // Couleur de fond semi-transparente
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 120, 120, 120, 215);
+    SDL_RenderFillRect(renderer, &bgRect);
+
+    // Restaurer la couleur
+    SDL_SetRenderDrawColor(renderer, r, g, b, a);
+
+    // Afficher le texte
+    SDL_RenderCopy(renderer, texture, NULL, &destRect);
+
+    SDL_FreeSurface(surface);
+    SDL_DestroyTexture(texture);
+}
+
+
+// transforme les coordonnée de l'écran en coordonnée de fractale
+void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy) {
+    *fx = (x - width / 2) / zoom + offsetX;
+    *fy = (y - height / 2) / zoom + offsetY;
+}
 
 
 // Calcule le nombre d'itérations de chaque pixels
@@ -1199,18 +1474,31 @@ int calculate_iterations(void* arg) {
                 iteration++;
             }
 
-            task->iterationMap[py * w + px] = iteration;
+            task->iterationMapBis[py * w + px] = iteration;
             if (iteration > *task->actual_max)
                 *task->actual_max = iteration;
 
             done++;
         }
+        
+        // On vérifie si on demande de sortir ou non
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            return EXIT_SUCCESS;
+        }
+        
         // Mettre à jour la progression une fois par ligne
         *task->progress = (done * 100) / total;
     }
+    
+    // On inverse les deux listes seulement quand on est sur que l'écriture est complête
+    int* iterationMapTemp = task->iterationMap;
+    task->iterationMap = task->iterationMapBis;
+    task->iterationMapBis = iterationMapTemp;
 
     *task->finished = true;
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 
@@ -1291,6 +1579,13 @@ int calculate_iterations(void* arg) {
 
                 done++;
             }
+            
+            // On vérifie si on demande de sortir ou non
+            if (task->shouldStop) {
+                *task->progress = 100;
+                *task->finished = true;
+                return EXIT_SUCCESS;
+            }
 
             *task->progress = (done * 100) / total;
         }
@@ -1360,16 +1655,9 @@ double clamp_double(double val, double min, double max) {
 }
 
 
-// transforme les coordonnée de l'écran en coordonnée de fractale
-void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy) {
-    *fx = (x - width / 2) / zoom + offsetX;
-    *fy = (y - height / 2) / zoom + offsetY;
-}
-
-                          
 // Appelle toute les fonctions nécéssaire a l'affichage de la texture proportionnel au zoom et au coordonnées
 void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, 
-                           double lastOffsetX, double lastOffsetY, double offsetX, double offsetY) {
+                           double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool frameRectOn) {
 
     // Récupère la taille de la texture
     int textureWidth, textureHeight;
@@ -1466,14 +1754,10 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
     srcRect.x += (int)floor(subPixelOffsetX / (zoom / lastZoom));
     srcRect.y += (int)floor(subPixelOffsetY / (zoom / lastZoom));
     
-    
-    // Efface l'écran en noir
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // noir opaque
-    SDL_RenderClear(renderer);
-    
+    bool isOutsideScreen = (destRect.x + destRect.w < 0 || destRect.x > windowWidth || destRect.y + destRect.h < 0 || destRect.y > windowHeight);
     
     // Affichage de la flèche qui pointe vers la texture si en dehors de l'écran
-    if (destRect.x + destRect.w < 0 || destRect.x > windowWidth || destRect.y + destRect.h < 0 || destRect.y > windowHeight) {
+    if (isOutsideScreen && frameRectOn) {
         int centerTexX = destRect.x + destRect.w / 2;
         int centerTexY = destRect.y + destRect.h / 2;
 
@@ -1514,95 +1798,30 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
 
         SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // rouge
         SDL_RenderDrawLines(renderer, arrow, 4);
+        
     }
-
-    // Imprime la texture bien placée sur la cible sélectionnée avant la fonction
-    SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
     
-    //printf("frameRect.x=%d frameRect.y=%d frameRect.w=%d frameRect.h=%d\n", frameRect.x, frameRect.y, frameRect.w, frameRect.h);
+    if (!isOutsideScreen) {
     
-    // Pour le dessin du rectangle autour de la texture
-    SDL_Rect frameRect = {
-        .x = destRect.x - 2,
-        .y = destRect.y - 2,
-        .w = destRect.w + 4,
-        .h = destRect.h + 4
-    };
-    
-    // Dessiner un bord autour de la texture
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); // blanc opaque
-    SDL_RenderDrawRect(renderer, &frameRect);
+        // Imprime la texture bien placée sur la cible sélectionnée avant la fonction
+        SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
+        
+        if (frameRectOn) {
+            // Pour le dessin du rectangle autour de la texture
+            SDL_Rect frameRect = {
+                .x = destRect.x - 2,
+                .y = destRect.y - 2,
+                .w = destRect.w + 4,
+                .h = destRect.h + 4
+            };
+            
+            // Dessiner un bord autour de la texture
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); // blanc opaque
+            SDL_RenderDrawRect(renderer, &frameRect);
+        }
+    }
 }
 
-
-// Dessine du texte blanc avec un fond gris arrondi semi-transparent
-void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin) {
-    SDL_Color color = {255, 255, 255, 255}; // Texte blanc
-    SDL_Surface *surface = TTF_RenderUTF8_Blended(font, text, color);
-    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
-
-    int text_width = surface->w;
-    int text_height = surface->h;
-
-    // Ajuster les coordonnées en fonction de l’origine
-    switch (origin) {
-        case ORIGIN_UP_LEFT: break;
-        case ORIGIN_UP_CENTER: x -= text_width / 2; break;
-        case ORIGIN_UP_RIGHT: x -= text_width; break;
-        case ORIGIN_MIDDLE_LEFT: y -= text_height / 2; break;
-        case ORIGIN_MIDDLE_CENTER: x -= text_width / 2; y -= text_height / 2; break;
-        case ORIGIN_MIDDLE_RIGHT: x -= text_width; y -= text_height / 2; break;
-        case ORIGIN_DOWN_LEFT: y -= text_height; break;
-        case ORIGIN_DOWN_CENTER: x -= text_width / 2; y -= text_height; break;
-        case ORIGIN_DOWN_RIGHT: x -= text_width; y -= text_height; break;
-    }
-
-    SDL_Rect destRect = {x, y, text_width, text_height};
-
-    // Calcul de la boîte de fond
-    int padding = 4;
-    SDL_Rect bgRect = {
-        destRect.x - padding,
-        destRect.y - padding,
-        destRect.w + 2 * padding,
-        destRect.h + 2 * padding
-    };
-
-    // Sauvegarder la couleur actuelle
-    Uint8 r, g, b, a;
-    SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a);
-
-    // Couleur de fond semi-transparente
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 120, 120, 120, 215);
-    SDL_RenderFillRect(renderer, &bgRect);
-
-    // Restaurer la couleur
-    SDL_SetRenderDrawColor(renderer, r, g, b, a);
-
-    // Afficher le texte
-    SDL_RenderCopy(renderer, texture, NULL, &destRect);
-
-    SDL_FreeSurface(surface);
-    SDL_DestroyTexture(texture);
-}
-
-
-// Charge une police d'écriture depuis la mémoire (un fichier .c)
-TTF_Font* load_font_from_memory(int size) {
-    SDL_RWops* rw = SDL_RWFromConstMem(DejaVuSans_ttf, DejaVuSans_ttf_len);
-    if (!rw) {
-        SDL_Log("Erreur SDL_RWFromConstMem: %s", SDL_GetError());
-        return NULL;
-    }
-
-    TTF_Font* font = TTF_OpenFontRW(rw, 1, size); // '1' = SDL gère la libération de rw
-    if (!font) {
-        SDL_Log("Erreur TTF_OpenFontRW: %s", TTF_GetError());
-    }
-
-    return font;
-}
 
 
 
