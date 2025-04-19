@@ -15,5 +15,11 @@ if ! git diff-index --quiet HEAD --; then
 fi
 
 # Lance le pull
-echo "📥 Pull en cours..."
-git pull origin main --tags
+echo "📥 Pull de la branche 'main'..."
+git pull origin main
+
+# Synchronise tous les tags (même ceux pas pointés par des commits de 'main')
+echo "🏷️  Synchronisation des tags..."
+git fetch --tags
+
+echo "✅ Pull et mise à jour des tags terminés."
