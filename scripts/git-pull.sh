@@ -23,3 +23,6 @@ echo "🏷️  Synchronisation des tags..."
 git fetch --tags
 
 echo "✅ Pull et mise à jour des tags terminés."
+
+echo "Appuyez sur une touche pour continuer..."
+read -n 1 -s

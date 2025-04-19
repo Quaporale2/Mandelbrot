@@ -50,3 +50,6 @@ fi
 # Envoie tous les tags locaux restants vers le dépôt
 echo "🚀 Envoi des tags locaux..."
 git push --tags
+
+echo "Appuyez sur une touche pour continuer..."
+read -n 1 -s
