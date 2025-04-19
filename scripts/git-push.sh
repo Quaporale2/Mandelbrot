@@ -1,10 +1,20 @@
 #!/bin/bash
 
-# Ajoute tous les fichiers
-git add .
 
-# Commit avec un message
-git commit -m "MAJ"
+# Enregistre le chemin du script actuel (dossier /scripts)
+SCRIPT_DIR=$(dirname "$0")
+
+# Va à la racine du projet (un dossier au-dessus du script)
+cd "$SCRIPT_DIR/.."
+
+# Vérifie que tu es bien à la racine du projet
+if [[ ! -d ".git" ]]; then
+    echo "❌ Erreur : ce script doit être exécuté à la racine d'un dépôt Git."
+    exit 1
+fi
+
+# Ajoute tous les fichiers, y compris les suppressions
+git add -A  # -A prend en compte les fichiers supprimés et non suivis
 
 # Pousse les commits vers la branche courante
 git push
@@ -53,3 +63,4 @@ git push --tags
 
 echo "Appuyez sur une touche pour continuer..."
 read -n 1 -s
+

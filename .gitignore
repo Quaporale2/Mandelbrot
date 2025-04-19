@@ -1,0 +1,16 @@
+# Objets compilés
+obj/
+*.o
+
+# Builds
+build/
+*.exe
+*.out
+
+# Résidus temporaires
+*.res
+*.log
+
+# Backups éditeur
+*~
+

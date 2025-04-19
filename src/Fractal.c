@@ -20,7 +20,6 @@
 // Pour la librairie graphique SDL
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
-
 #include <SDL_ttf.h>
 
 
@@ -30,6 +29,7 @@
     #include <mpfr.h>
     #include <gmp.h>
 #endif
+
 
 // Etats vrais ou faux
 #define false 0
@@ -56,6 +56,11 @@ typedef struct {
     double offsetY;
 } FractalView;
 
+// Liste de l'historique des zooms
+FractalView history[MAX_HISTORY];
+int historyIndex = -1;
+
+
 
 // Pour la séparation en un deuxième thread lors du calcul
 typedef struct {
@@ -71,8 +76,6 @@ typedef struct {
 } FractalTask;
 
 
-
-
 // Pour mieux voir les différents types de menus
 enum menuTypes {
     no_menu = 0,
@@ -81,6 +84,7 @@ enum menuTypes {
     offsetX_menu = 3,
     offsetY_menu = 4
 };
+
 
 // Pour les différents types de positionnement du texte
 typedef enum {
@@ -95,6 +99,7 @@ typedef enum {
     ORIGIN_DOWN_RIGHT
 } OriginType;
 
+
 // Pour les différentes palettes de couleurs
 typedef enum {
     NO_COLOR = 0,
@@ -102,10 +107,6 @@ typedef enum {
     WHITE_BLACK = 2,
     RAINBOW = 3
 } ColorSchemes;
-
-// Liste de l'historique des zooms
-FractalView history[MAX_HISTORY];
-int historyIndex = -1;
 
 // La palette de couleur que va utiliser le Mandelbrot
 SDL_Color palette[PALETTE_SIZE];
@@ -117,6 +118,9 @@ extern unsigned int DejaVuSans_ttf_len;
 
 
 
+// Charge une police d'écriture depuis la mémoire (un fichier .c)
+TTF_Font* load_font_from_memory(int size);
+
 // Gestion des palette de couleurs du Mandelbrot
 void generate_palette_hot_cold();
 void generate_palette_white_black();
@@ -126,44 +130,23 @@ void generate_palette_rainbow();
 void push_view(double zoom, double offsetX, double offsetY);
 bool pop_view(double *zoom, double *offsetX, double *offsetY);
 
+// Dessine le texte passé en paramètre
+void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
+
+// Calcul des positions sur l'écran par rapport au positions dans la fractale
+void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy);
+
 // Calcul de l'image du Mandelbrot
 int calculate_iterations(void* arg);
 #ifdef __linux__
     int calculate_iterations_high_precision(void* arg);
 #endif
 
+// Rendu des itérations en une image
 void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
-
-
-
-// Calcul des positions sur l'écran par rapport au positions dans la fractale
-void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy);
-
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
 void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY);
-
-
-
-// Dessine le texte passé en paramètre
-void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
-
-
-
-TTF_Font* load_font_from_memory(int size) {
-    SDL_RWops* rw = SDL_RWFromConstMem(DejaVuSans_ttf, DejaVuSans_ttf_len);
-    if (!rw) {
-        SDL_Log("Erreur SDL_RWFromConstMem: %s", SDL_GetError());
-        return NULL;
-    }
-
-    TTF_Font* font = TTF_OpenFontRW(rw, 1, size); // '1' = SDL gère la libération de rw
-    if (!font) {
-        SDL_Log("Erreur TTF_OpenFontRW: %s", TTF_GetError());
-    }
-
-    return font;
-}
 
 
 
@@ -1605,7 +1588,21 @@ void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x
 }
 
 
+// Charge une police d'écriture depuis la mémoire (un fichier .c)
+TTF_Font* load_font_from_memory(int size) {
+    SDL_RWops* rw = SDL_RWFromConstMem(DejaVuSans_ttf, DejaVuSans_ttf_len);
+    if (!rw) {
+        SDL_Log("Erreur SDL_RWFromConstMem: %s", SDL_GetError());
+        return NULL;
+    }
 
+    TTF_Font* font = TTF_OpenFontRW(rw, 1, size); // '1' = SDL gère la libération de rw
+    if (!font) {
+        SDL_Log("Erreur TTF_OpenFontRW: %s", TTF_GetError());
+    }
+
+    return font;
+}
 
 
 
