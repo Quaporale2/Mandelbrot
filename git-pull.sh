@@ -1,5 +1,5 @@
 #!/bin/bash
 
 # Récupère le repository Github à jour
-git pull origin main
+git pull origin main --tags
 
