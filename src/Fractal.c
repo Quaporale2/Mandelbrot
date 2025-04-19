@@ -69,6 +69,8 @@ typedef struct {
 } FractalTask;
 
 
+
+
 // Pour mieux voir les différents types de menus
 enum menuTypes {
     no_menu = 0,
@@ -95,7 +97,8 @@ typedef enum {
 typedef enum {
     NO_COLOR = 0,
     HOT_COLD = 1,
-    WHITE_BLACK = 2
+    WHITE_BLACK = 2,
+    RAINBOW = 3
 } ColorSchemes;
 
 // Liste de l'historique des zooms
@@ -110,6 +113,7 @@ SDL_Color palette[PALETTE_SIZE];
 // Gestion des palette de couleurs du Mandelbrot
 void generate_palette_hot_cold();
 void generate_palette_white_black();
+void generate_palette_rainbow();
 
 // Gestion de l'historique de position de l'image
 void push_view(double zoom, double offsetX, double offsetY);
@@ -294,6 +298,8 @@ int main(int argc, char *argv[]) {
         case WHITE_BLACK:
             generate_palette_white_black();
             break;
+        case RAINBOW:
+            generate_palette_rainbow();
     }
 
 
@@ -509,12 +515,16 @@ int main(int argc, char *argv[]) {
                         // Touche B pour parcourir les couleurs de palettes
                         switch (colorScheme) {
                             case HOT_COLD:
-                                colorScheme = WHITE_BLACK;
+                                colorScheme = RAINBOW;
                                 generate_palette_white_black();
                                 break;
                             case WHITE_BLACK:
                                 colorScheme = HOT_COLD;
                                 generate_palette_hot_cold();
+                                break;
+                            case RAINBOW:
+                                colorScheme = WHITE_BLACK;
+                                generate_palette_rainbow();
                                 break;
                         }
                         redrawInterface = true;
@@ -618,37 +628,6 @@ int main(int argc, char *argv[]) {
             
             // Gestion de l'actualisation de la taille de la texture au changement de taille d'écran
             if (event.type == SDL_MOUSEBUTTONDOWN && (event.button.button == SDL_BUTTON_LEFT || event.button.button == SDL_BUTTON_RIGHT) && !menuMode && !initialClickDone && !fractalCalcPending) {
-                
-                // 1. Sauvegarder l’ancienne texture et sa taille
-                SDL_Texture* oldTexture = fractalTexture;
-                int oldW, oldH;
-                SDL_QueryTexture(oldTexture, NULL, NULL, &oldW, &oldH);
-
-                // 2. Créer la nouvelle texture avec la nouvelle taille
-                fractalTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, windowWidth, windowHeight);
-
-                // 3. Copier l’ancienne texture dedans, centrée
-                SDL_SetRenderTarget(renderer, fractalTexture);
-                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // fond noir si plus grand
-                SDL_RenderClear(renderer);
-
-                SDL_Rect srcRect = { 0, 0, oldW, oldH };
-                SDL_Rect dstRect = {
-                    (windowWidth - oldW) / 2,
-                    (windowHeight - oldH) / 2,
-                    oldW,
-                    oldH
-                };
-
-                SDL_RenderCopy(renderer, oldTexture, &srcRect, &dstRect);
-
-                // 4. Nettoyer
-                SDL_SetRenderTarget(renderer, NULL);
-                SDL_DestroyTexture(oldTexture);
-                
-                // Actualiser la taille de la map d'itérations
-                free(task.iterationMap);
-                task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
 
                 initialClickDone = true;
                 redrawInterface = true;
@@ -784,16 +763,13 @@ int main(int argc, char *argv[]) {
             // Calcul terminé
             if (finished) {
             
-                // Si un redimensionnement de la fenêtre a eu lieu depuis le lancement du calcul, on ignore le résultat
-                if (initialClickDone) {
-
-                    // On lance le rendu en couleur des calculs
-                    renderIterations = true;
-                    
-                    lastZoom = lastZoomSave;
-                    lastOffsetX = lastOffsetXSave;
-                    lastOffsetY = lastOffsetYSave;
-                }     
+                // On lance le rendu en couleur des calculs
+                renderIterations = true;
+                
+                lastZoom = lastZoomSave;
+                lastOffsetX = lastOffsetXSave;
+                lastOffsetY = lastOffsetYSave;
+  
                 redrawInterface = true;    
                 fractalCalcPending = false;  
                 redrawLoading = false;     
@@ -807,7 +783,7 @@ int main(int argc, char *argv[]) {
             SDL_SetRenderTarget(renderer, fractalTexture);
             
             // Lance la ransformation de la liste d'itérations en couleurs
-            render_iterations(renderer, task.iterationMap, windowWidth, windowHeight, palette, max_iteration, actual_max, activateAntialiasing);
+            render_iterations(renderer, task.iterationMap, task.width, task.height, palette, max_iteration, actual_max, activateAntialiasing);
             
             // Dessine la texture sur l'écran, comme elle vient d'être redessinnée pas besoin de l'ajuster auparavant
             SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
@@ -833,9 +809,39 @@ int main(int argc, char *argv[]) {
             // Imprime la texture du Mandelbrot correctement placée par rapport au zoom et à l'offset
             draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
             
-            // Pour afficher le message du chargement
-            render_text(renderer, font, "Chargement en cours...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
-                       
+            // 1. Sauvegarder l’ancienne texture et sa taille
+            int oldW, oldH;
+            SDL_QueryTexture(fractalTexture, NULL, NULL, &oldW, &oldH);
+            // Si taille de la texture plus égale a la taille de la fenêtre, on l'ajuste
+            if (oldW != windowWidth || oldH != windowHeight) {
+
+                SDL_Texture* oldTexture = fractalTexture;
+
+                // 2. Créer la nouvelle texture avec la nouvelle taille
+                fractalTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, windowWidth, windowHeight);
+
+                // 3. Copier l’ancienne texture dedans, centrée
+                SDL_SetRenderTarget(renderer, fractalTexture);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // fond noir si plus grand
+                SDL_RenderClear(renderer);
+
+                SDL_Rect srcRect = { 0, 0, oldW, oldH };
+                SDL_Rect dstRect = {
+                    (windowWidth - oldW) / 2,
+                    (windowHeight - oldH) / 2,
+                    oldW,
+                    oldH
+                };
+
+                SDL_RenderCopy(renderer, oldTexture, &srcRect, &dstRect);
+
+                // 4. Nettoyer
+                SDL_DestroyTexture(oldTexture);
+
+                // Actualiser la taille de la map d'itérations
+                free(task.iterationMap);
+                task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
+            }
             
             task.max_iteration = max_iteration;
             task.zoom = zoom;
@@ -923,6 +929,9 @@ int main(int argc, char *argv[]) {
                     break;
                 case WHITE_BLACK:
                     render_text(renderer, font, "B pour alterner les couleurs:  BLANC/NOIR", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    break;
+                case RAINBOW:
+                    render_text(renderer, font, "B pour alterner les couleurs: ARC-EN-CIEL", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
             }
             
@@ -1083,6 +1092,48 @@ void generate_palette_white_black() {
         palette[i].b = (int)(255 * t); // bleu
     }
 }
+
+// Génère une palette de couleurs arc-en-ciel
+void generate_palette_rainbow() {
+    for (int i = 0; i < PALETTE_SIZE; i++) {
+        float t = (float)i / (PALETTE_SIZE - 1);
+
+        // Interpolation des composantes de couleurs pour l'arc-en-ciel
+        float r = 0.0, g = 0.0, b = 0.0;
+
+        if (t < 1.0 / 6.0) {
+            // Rouge vers Jaune
+            r = 1.0;
+            g = 6.0 * t;
+        } else if (t < 2.0 / 6.0) {
+            // Jaune vers Vert
+            r = 1.0 - 6.0 * (t - 1.0 / 6.0);
+            g = 1.0;
+        } else if (t < 3.0 / 6.0) {
+            // Vert vers Cyan
+            g = 1.0;
+            b = 6.0 * (t - 2.0 / 6.0);
+        } else if (t < 4.0 / 6.0) {
+            // Cyan vers Bleu
+            g = 1.0 - 6.0 * (t - 3.0 / 6.0);
+            b = 1.0;
+        } else if (t < 5.0 / 6.0) {
+            // Bleu vers Violet
+            r = 6.0 * (t - 4.0 / 6.0);
+            b = 1.0;
+        } else {
+            // Violet vers Rouge
+            r = 1.0;
+            b = 1.0 - 6.0 * (t - 5.0 / 6.0);
+        }
+
+        // Conversion des valeurs RGB (0-1) en entier (0-255)
+        palette[i].r = (int)(r * 255);
+        palette[i].g = (int)(g * 255);
+        palette[i].b = (int)(b * 255);
+    }
+}
+
 
 
 // Ajoute la vue actuelle a l'historique
