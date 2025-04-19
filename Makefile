@@ -1,7 +1,7 @@
 
 
 # Nom des exécutables
-VERSION = v1.0
+VERSION = v1.1
 LINUX_OUTPUT = Fractal-linux-x86_64-$(VERSION)
 WIN_OUTPUT = Fractal-win64-$(VERSION).exe
 
