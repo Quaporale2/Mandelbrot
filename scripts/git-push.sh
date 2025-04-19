@@ -16,6 +16,8 @@ fi
 # Ajoute tous les fichiers, y compris les suppressions
 git add -A  # -A prend en compte les fichiers supprimés et non suivis
 
+git commit -m "MAJ"
+
 # Pousse les commits vers la branche courante
 git push
 
