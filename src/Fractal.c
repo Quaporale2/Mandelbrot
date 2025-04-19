@@ -117,10 +117,12 @@ bool pop_view(double *zoom, double *offsetX, double *offsetY);
 
 // Calcul de l'image du Mandelbrot
 int calculate_iterations(void* arg);
-void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
 #ifdef __linux__
-    void draw_mandelbrot_high_precision(SDL_Renderer *renderer, SDL_Texture *texture, int max_iteration, double zoom, double offsetX, double offsetY, int width, int height, bool antialiasing);
+    int calculate_iterations_high_precision(void* arg);
 #endif
+
+void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
+
 
 
 // Calcul des positions sur l'écran par rapport au positions dans la fractale
@@ -238,6 +240,8 @@ int main(int argc, char *argv[]) {
     SDL_Point selectStart = {0, 0}, selectEnd = {0, 0};
     
     bool fractalCalcPending = false;
+    
+    bool renderIterations = false;
     
     // Initialise la police d'écriture
     TTF_Init();
@@ -456,8 +460,6 @@ int main(int argc, char *argv[]) {
                         redrawInterface = true;
                         queryCalculateImage = true;
                         break;
-
-
                 }
             }
             if (event.type == SDL_KEYDOWN && initialClickDone && !menuMode && !fractalCalcPending) {
@@ -488,6 +490,7 @@ int main(int argc, char *argv[]) {
                         activateAntialiasing = !activateAntialiasing;
                         redrawInterface = true;
                         queryCalculateImage = true;
+                        renderIterations = true;
                         break;
                     case SDLK_r:
                         // Toggle pour activer/désactiver l'autorefresh de l'image du mandelbrot avec la touche R
@@ -516,6 +519,7 @@ int main(int argc, char *argv[]) {
                         }
                         redrawInterface = true;
                         queryCalculateImage = true;
+                        renderIterations = true;
                         break;
                 }
                 
@@ -783,18 +787,8 @@ int main(int argc, char *argv[]) {
                 // Si un redimensionnement de la fenêtre a eu lieu depuis le lancement du calcul, on ignore le résultat
                 if (initialClickDone) {
 
-                    // Sélectionne la texture comme cible SDL
-                    SDL_SetRenderTarget(renderer, fractalTexture);
-                    
-                    // Avec les itérations calculées, on fait maintenant le rendu en couleur sur la texture
-                    render_iterations(renderer, task.iterationMap, windowWidth, windowHeight, palette, max_iteration, actual_max, activateAntialiasing);
-                    
-                    // Dessine la texture sur l'écran, comme elle vient d'être redessinnée pas besoin de l'ajuster auparavant
-                    SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
-                    
-                    fractalCalcPending = false;
-                    redrawInterface = true;
-                    redrawLoading = false;
+                    // On lance le rendu en couleur des calculs
+                    renderIterations = true;
                     
                     lastZoom = lastZoomSave;
                     lastOffsetX = lastOffsetXSave;
@@ -804,6 +798,21 @@ int main(int argc, char *argv[]) {
                 fractalCalcPending = false;  
                 redrawLoading = false;     
             }
+        }
+        
+        // Avec les itérations calculées, on fait maintenant le rendu en couleur sur la texture
+        if (renderIterations) {
+        
+            // Sélectionne la texture comme cible SDL
+            SDL_SetRenderTarget(renderer, fractalTexture);
+            
+            // Lance la ransformation de la liste d'itérations en couleurs
+            render_iterations(renderer, task.iterationMap, windowWidth, windowHeight, palette, max_iteration, actual_max, activateAntialiasing);
+            
+            // Dessine la texture sur l'écran, comme elle vient d'être redessinnée pas besoin de l'ajuster auparavant
+            SDL_RenderCopy(renderer, fractalTexture, NULL, NULL);
+            
+            renderIterations = false;
         }
 
         // Si l'utilisateur n'a pas encore cliqué après le redimensionnement et qu'on actualise l'affichage, on affiche just un message
@@ -836,7 +845,17 @@ int main(int argc, char *argv[]) {
             task.height = windowHeight;
             task.antialiasing = activateAntialiasing;
 
-            SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+            #ifdef __linux__
+                if (advancedMode) {
+                    SDL_CreateThread(calculate_iterations_high_precision, "CalcFractalThread", &task);
+                } else {
+                    SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+                }
+            #else
+                SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+            #endif
+            
+
             
             // On déclare que le calcul est en cours
             fractalCalcPending = true;
@@ -1134,6 +1153,97 @@ int calculate_iterations(void* arg) {
 }
 
 
+// Calcule le nombre d'itérations de chaque pixels
+// Utilise une biliothèque permettant un zoom techniquement infini
+#ifdef __linux__
+    int calculate_iterations_high_precision(void* arg) {
+        FractalTask* task = (FractalTask*)arg;
+
+        int w = task->width;
+        int h = task->height;
+        int total = w * h;
+        int done = 0;
+
+        *task->actual_max = 0;
+        *task->finished = false;
+        *task->progress = 0;
+
+        mpfr_prec_t precision = 256;
+
+        // Variables MPFR
+        mpfr_t x0, y0, x, y, xtemp, xsqr, ysqr, sum;
+        mpfr_t two, four, offsetX, offsetY, inv_zoom, px_shifted, py_shifted;
+
+        mpfr_inits2(precision, x0, y0, x, y, xtemp, xsqr, ysqr, sum, two, four,
+                    offsetX, offsetY, inv_zoom, px_shifted, py_shifted, (mpfr_ptr) 0);
+
+        mpfr_set_d(two, 2.0, MPFR_RNDN);
+        mpfr_set_d(four, 4.0, MPFR_RNDN);
+        mpfr_set_d(offsetX, task->offsetX, MPFR_RNDN);
+        mpfr_set_d(offsetY, task->offsetY, MPFR_RNDN);
+
+        // Inverser zoom pour éviter de diviser à chaque pixel
+        mpfr_set_d(inv_zoom, 1.0 / task->zoom, MPFR_RNDN);
+
+        double half_w = w / 2.0;
+        double half_h = h / 2.0;
+
+        for (int py = 0; py < h; py++) {
+            double y_base = py - half_h;
+            mpfr_set_d(py_shifted, y_base, MPFR_RNDN);
+            mpfr_mul(y0, py_shifted, inv_zoom, MPFR_RNDN);
+            mpfr_add(y0, y0, offsetY, MPFR_RNDN);
+
+            for (int px = 0; px < w; px++) {
+                double x_base = px - half_w;
+                mpfr_set_d(px_shifted, x_base, MPFR_RNDN);
+                mpfr_mul(x0, px_shifted, inv_zoom, MPFR_RNDN);
+                mpfr_add(x0, x0, offsetX, MPFR_RNDN);
+
+                mpfr_set_d(x, 0.0, MPFR_RNDN);
+                mpfr_set_d(y, 0.0, MPFR_RNDN);
+
+                int iteration = 0;
+
+                while (iteration < task->max_iteration) {
+                    mpfr_sqr(xsqr, x, MPFR_RNDN);    // xsqr = x^2
+                    mpfr_sqr(ysqr, y, MPFR_RNDN);    // ysqr = y^2
+                    mpfr_add(sum, xsqr, ysqr, MPFR_RNDN);
+
+                    if (mpfr_cmp(sum, four) > 0) break;
+
+                    mpfr_sub(xtemp, xsqr, ysqr, MPFR_RNDN);   // xtemp = x^2 - y^2
+                    mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);    // xtemp += x0
+
+                    mpfr_mul(y, x, y, MPFR_RNDN);
+                    mpfr_mul(y, y, two, MPFR_RNDN);
+                    mpfr_add(y, y, y0, MPFR_RNDN);
+
+                    mpfr_set(x, xtemp, MPFR_RNDN);
+
+                    iteration++;
+                }
+
+                task->iterationMap[py * w + px] = iteration;
+                if (iteration > *task->actual_max)
+                    *task->actual_max = iteration;
+
+                done++;
+            }
+
+            *task->progress = (done * 100) / total;
+        }
+
+        mpfr_clears(x0, y0, x, y, xtemp, xsqr, ysqr, sum,
+                    two, four, offsetX, offsetY, inv_zoom,
+                    px_shifted, py_shifted, (mpfr_ptr) 0);
+
+        *task->finished = true;
+        return 0;
+    }
+#endif
+
+
 // Fait le rendu en couleurs des itérations sur la cible SDL
 void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing) {
 
@@ -1183,141 +1293,6 @@ void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, 
 }
 
 
-// Dessine la texture du Mandelbrot dans un objet texture SDL, version avec un zoom virtuellement infini
-// Disponible seulement dans la version linux
-#ifdef __linux__
-    void draw_mandelbrot_high_precision(SDL_Renderer *renderer, SDL_Texture *texture, int max_iteration, double zoom, double offsetX, double offsetY, int width, int height, bool antialiasing) {
-
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
-
-        mpfr_t x0, y0, x, y, xtemp, tempX, tempY, two;
-        int actual_max = 0;
-
-        // Calcul du facteur de précision basé sur le zoom
-        double min_precision_bits = 10.0; // Précision minimale (par exemple 100 bits)
-        double scaling_factor = 4.0;      // Facteur d'échelle pour la précision
-        double precision_bits = min_precision_bits + (scaling_factor * log(zoom));  // Formule logarithmique
-
-        // Initialisation de la précision
-        mpfr_init2(x0, (int)precision_bits);  // 256 bits de précision
-        mpfr_init2(y0, (int)precision_bits);
-        mpfr_init2(x, (int)precision_bits);
-        mpfr_init2(y, (int)precision_bits);
-        mpfr_init2(xtemp, (int)precision_bits);
-        mpfr_init2(tempX, (int)precision_bits);
-        mpfr_init2(tempY, (int)precision_bits);
-        mpfr_init2(two, (int)precision_bits);
-        
-        // Contient juste la valeur 2
-        mpfr_set_d(two, (double)(2.0), MPFR_RNDN);
-
-        // 1ère passe : calcul des itérations et stockage des valeurs pour chaque pixel
-        int *iterationMap = malloc(width * height * sizeof(int));  // Utilisation d'un tableau à une dimension
-        for (int py = 0; py < height; py++) {
-            for (int px = 0; px < width; px++) {
-                // Convertir les coordonnées de l'écran en coordonnées fractale avec MPFR
-                mpfr_set_d(x0, (px - width / 2.0) / zoom + offsetX, MPFR_RNDN);
-                mpfr_set_d(y0, (py - height / 2.0) / zoom + offsetY, MPFR_RNDN);
-
-                mpfr_set_d(x, 0.0, MPFR_RNDN);
-                mpfr_set_d(y, 0.0, MPFR_RNDN);
-                int iteration = 0;
-
-                mpfr_t norm;
-                mpfr_init2(norm, (int)precision_bits);  // Initialisation de la variable norme
-
-                while (iteration < max_iteration) {
-                    // Calcul de x² + y² (norme quadratique)
-                    mpfr_mul(tempX, x, x, MPFR_RNDN);  // tempX = x^2
-                    mpfr_mul(tempY, y, y, MPFR_RNDN);  // tempY = y^2
-                    mpfr_add(norm, tempX, tempY, MPFR_RNDN);  // norm = x^2 + y^2
-
-                    // Si la norme dépasse 4, on quitte la boucle
-                    if (mpfr_cmp_d(norm, 4.0) >= 0.0) {
-                        break;
-                    }
-
-                    // Calcul du prochain x et y
-                    mpfr_sub(xtemp, tempX, tempY, MPFR_RNDN);  // xtemp = x^2 - y^2
-                    mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);     // xtemp += x0
-
-                    mpfr_mul(tempX, x, y, MPFR_RNDN);          // tempX = x * y
-                    mpfr_mul(tempX, tempX, two, MPFR_RNDN);    // tempX *= 2
-                    mpfr_add(y, tempX, y0, MPFR_RNDN);         // y = 2xy + y0
-
-                    mpfr_set(x, xtemp, MPFR_RNDN);  // Mise à jour de x
-
-                    iteration++;
-                }
-                
-                iterationMap[py * width + px] = iteration;
-                if (iteration > actual_max) {
-                    actual_max = iteration;
-                }
-            }
-        }
-
-        // 2ème passe : rendu avec interpolation pour l'anticrénelage
-        for (int py = 0; py < height; py++) {
-            for (int px = 0; px < width; px++) {
-                int iteration;
-
-                if (antialiasing) {
-                    // Antialiasing activé : moyenne avec les pixels voisins
-                    int neighboringIterations = iterationMap[py * width + px];
-                    int count = 1;
-
-                    if (px > 0) {
-                        neighboringIterations += iterationMap[py * width + (px - 1)];
-                        count++;
-                    }
-                    if (px < width - 1) {
-                        neighboringIterations += iterationMap[py * width + (px + 1)];
-                        count++;
-                    }
-                    if (py > 0) {
-                        neighboringIterations += iterationMap[(py - 1) * width + px];
-                        count++;
-                    }
-                    if (py < height - 1) {
-                        neighboringIterations += iterationMap[(py + 1) * width + px];
-                        count++;
-                    }
-
-                    iteration = neighboringIterations / count;
-                } else {
-                    // Antialiasing désactivé : on utilise la valeur brute
-                    iteration = iterationMap[py * width + px];
-                }
-
-                // On va sélectionner la couleur de chaque pixel depuis la palette pré-générée
-                if (iteration == max_iteration) {
-                    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-                } else {
-                    int colorIndex = (iteration * (PALETTE_SIZE - 1)) / actual_max;
-                    SDL_Color color = palette[colorIndex];
-                    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
-                }
-                SDL_RenderDrawPoint(renderer, px, py);
-            }
-        }
-
-        free(iterationMap);  // Libération de la mémoire
-
-        // Libération des variables MPFR
-        mpfr_clear(x0);
-        mpfr_clear(y0);
-        mpfr_clear(x);
-        mpfr_clear(y);
-        mpfr_clear(xtemp);
-        mpfr_clear(tempX);
-        mpfr_clear(tempY);
-        mpfr_clear(two);
-    }
-#endif
-
-
 // Clamp helper
 double clamp_double(double val, double min, double max) {
     return (val < min) ? min : (val > max) ? max : val;
@@ -1351,6 +1326,7 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
     double sx2 = (fx2 - lastOffsetX) * lastZoom + textureWidth / 2.0;
     double sy2 = (fy2 - lastOffsetY) * lastZoom + textureHeight / 2.0;
 
+
     // On limite les valeurs des positions maximales
     sx1 = clamp_double(sx1, 0.0, textureWidth  - 1.0);
     sy1 = clamp_double(sy1, 0.0, textureHeight - 1.0);
@@ -1374,13 +1350,9 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
     destRect.w = (int)(textureWidth * (zoom / lastZoom));
     destRect.h = (int)(textureHeight * (zoom / lastZoom));
 
-
-    // Décalage du centre (par rapport à la fenêtre)
-    int shiftX = (int)((lastOffsetX - offsetX) * zoom);
-    int shiftY = (int)((lastOffsetY - offsetY) * zoom);
+    destRect.x = (windowWidth - destRect.w) / 2 + (int)((lastOffsetX - offsetX) * zoom);
+    destRect.y = (windowHeight - destRect.h) / 2 + (int)((lastOffsetY - offsetY) * zoom);
     
-    destRect.x = (windowWidth - destRect.w) / 2 + shiftX;
-    destRect.y = (windowHeight - destRect.h) / 2 + shiftY;
 
 
     // Ne compense pas si on est déjà au bord (sinon bugs visuels)
@@ -1486,9 +1458,19 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
     // Imprime la texture bien placée sur la cible sélectionnée avant la fonction
     SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
     
+    //printf("frameRect.x=%d frameRect.y=%d frameRect.w=%d frameRect.h=%d\n", frameRect.x, frameRect.y, frameRect.w, frameRect.h);
+    
+    // Pour le dessin du rectangle autour de la texture
+    SDL_Rect frameRect = {
+        .x = destRect.x - 2,
+        .y = destRect.y - 2,
+        .w = destRect.w + 4,
+        .h = destRect.h + 4
+    };
+    
     // Dessiner un bord autour de la texture
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); // blanc opaque
-    SDL_RenderDrawRect(renderer, &destRect);
+    SDL_RenderDrawRect(renderer, &frameRect);
 }
 
 
