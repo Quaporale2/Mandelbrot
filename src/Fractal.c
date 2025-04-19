@@ -17,10 +17,6 @@
 #include <string.h>
 #include <ctype.h>
 
-// Pour l'éxécution d'un thread secondaire
-//#include <pthread.h>
-//#include <stdatomic.h>
-
 // Pour la librairie graphique SDL
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -130,8 +126,6 @@ void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, 
 // Calcul des positions sur l'écran par rapport au positions dans la fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy);
 
-// Calcul du rectangle source et du rectangle de destination, pour le placement de la texture actuelle en fonction de la position précédente et actuelle
-void calculate_rectangles(double fx1, double fy1, double fx2, double fy2, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, SDL_Rect *srcRect, SDL_Rect *destRect);
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
 void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY);
@@ -185,9 +179,6 @@ int main(int argc, char *argv[]) {
     // Taille de la fenêtre de départ
     int windowWidth = 1200;
     int windowHeight = 800;
-    
-    int lastWindowWidth = windowWidth;
-    int lastWindowHeight = windowHeight;
     
     // Taille minimale de la fenêtre
     const int minWindowWidth = 500;
@@ -654,9 +645,6 @@ int main(int argc, char *argv[]) {
                 // Actualiser la taille de la map d'itérations
                 free(task.iterationMap);
                 task.iterationMap = malloc(windowWidth * windowHeight * sizeof(int));
-                
-                lastWindowWidth = windowWidth;
-                lastWindowHeight = windowHeight;
 
                 initialClickDone = true;
                 redrawInterface = true;
@@ -864,18 +852,9 @@ int main(int argc, char *argv[]) {
             // Sélectionne l'écran comme cible SDL
             SDL_SetRenderTarget(renderer, NULL);
 
-            double offsetXtemp = offsetX;
-            double offsetYtemp = offsetY;
-
-            // Si la taille de fenêtre a changé, on ajuste dynamiquement l'offset pour garder le centre fractal fixe
-            if (lastWindowWidth != windowWidth || lastWindowHeight != windowHeight) {
-                offsetXtemp = offsetX + (lastWindowWidth - windowWidth) / (2.0 * zoom);
-                offsetYtemp = offsetY + (lastWindowHeight - windowHeight) / (2.0 * zoom);
-            }
-
             // Dessine avec les offsets temporaires
-            draw_mandelbrot_well_placed(renderer, fractalTexture, lastWindowWidth, lastWindowHeight, zoom,
-                                         lastZoom, lastOffsetX, lastOffsetY, offsetXtemp, offsetYtemp);
+            draw_mandelbrot_well_placed(renderer, fractalTexture, windowWidth, windowHeight, zoom,
+                                         lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY);
 
             drawingMade = true;
         }
@@ -1339,93 +1318,177 @@ void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, 
 #endif
 
 
+// Clamp helper
+double clamp_double(double val, double min, double max) {
+    return (val < min) ? min : (val > max) ? max : val;
+}
+
+
 // transforme les coordonnée de l'écran en coordonnée de fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy) {
     *fx = (x - width / 2) / zoom + offsetX;
     *fy = (y - height / 2) / zoom + offsetY;
 }
 
-
-// Fonction pour calculer les rectangles source et destination
-void calculate_rectangles(double fx1, double fy1, double fx2, double fy2, 
-                           int windowWidth, int windowHeight, double zoom, double lastZoom, 
-                           double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, 
-                           SDL_Rect *srcRect, SDL_Rect *destRect) {
-                           
-    // Et retransforme ces points en pixels de la texture précédente (avec lastZoom)
-    int sx1, sy1, sx2, sy2;
-    sx1 = (int)((fx1 - lastOffsetX) * lastZoom + windowWidth / 2);
-    sy1 = (int)((fy1 - lastOffsetY) * lastZoom + windowHeight / 2);
-    sx2 = (int)((fx2 - lastOffsetX) * lastZoom + windowWidth / 2);
-    sy2 = (int)((fy2 - lastOffsetY) * lastZoom + windowHeight / 2);
-
-    *srcRect = (SDL_Rect){ smallest(sx1, sx2), smallest(sy1, sy2), abs(sx2 - sx1), abs(sy2 - sy1) };
-    
-    // Clamp le srcRect à l'intérieur de la texture
-    if (srcRect->x < 0) {
-        srcRect->w += srcRect->x;
-        srcRect->x = 0;
-    }
-    if (srcRect->y < 0) {
-        srcRect->h += srcRect->y;
-        srcRect->y = 0;
-    }
-    if (srcRect->x + srcRect->w > windowWidth) {
-        srcRect->w = windowWidth - srcRect->x;
-    }
-    if (srcRect->y + srcRect->h > windowHeight) {
-        srcRect->h = windowHeight - srcRect->y;
-    }
-
-    
-    // Taille à dessiner à l'écran (plus petite que l'écran)
-    destRect->w = (int)(windowWidth * (zoom / lastZoom));
-    destRect->h = (int)(windowHeight * (zoom / lastZoom));
-
-    // Positionner le rectangle en tenant compte du déplacement du centre
-    int shiftX = (int)((lastOffsetX - offsetX) * zoom);
-    int shiftY = (int)((lastOffsetY - offsetY) * zoom);
-
-    destRect->x = (windowWidth - destRect->w) / 2 + shiftX;
-    destRect->y = (windowHeight - destRect->h) / 2 + shiftY;
-
-    // Clamp le srcRect à l'intérieur de la texture
-    if (destRect->x < 0) {
-        destRect->w += destRect->x;
-        destRect->x = 0;
-    }
-    if (destRect->y < 0) {
-        destRect->h += destRect->y;
-        destRect->y = 0;
-    }
-    if (destRect->x + destRect->w > windowWidth) {
-        destRect->w = windowWidth - destRect->x;
-    }
-    if (destRect->y + destRect->h > windowHeight) {
-        destRect->h = windowHeight - destRect->y;
-    }
-}
-
-
+                          
 // Appelle toute les fonctions nécéssaire a l'affichage de la texture proportionnel au zoom et au coordonnées
 void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, 
                            double lastOffsetX, double lastOffsetY, double offsetX, double offsetY) {
+
+    // Récupère la taille de la texture
+    int textureWidth, textureHeight;
+    SDL_QueryTexture(texture, NULL, NULL, &textureWidth, &textureHeight);
 
     // Calcule les coins dans l'ancien espace fractal (avant zoom)
     double fx1, fy1, fx2, fy2;
     screen_to_fractal(0, 0, zoom, offsetX, offsetY, windowWidth, windowHeight, &fx1, &fy1);
     screen_to_fractal(windowWidth, windowHeight, zoom, offsetX, offsetY, windowWidth, windowHeight, &fx2, &fy2);
     
-    // Calcule les dimensions du rectangle de début et de destination, pour savoir comment zoomer sur la texture existante
-    SDL_Rect srcRect, destRect;
-    calculate_rectangles(fx1, fy1, fx2, fy2, windowWidth, windowHeight, zoom, lastZoom, lastOffsetX, lastOffsetY, offsetX, offsetY, &srcRect, &destRect);
+    
+    // Reprojette les coins (fx1, fy1) et (fx2, fy2) en pixels dans l’ancienne texture
+    double sx1 = (fx1 - lastOffsetX) * lastZoom + textureWidth / 2.0;
+    double sy1 = (fy1 - lastOffsetY) * lastZoom + textureHeight / 2.0;
+    double sx2 = (fx2 - lastOffsetX) * lastZoom + textureWidth / 2.0;
+    double sy2 = (fy2 - lastOffsetY) * lastZoom + textureHeight / 2.0;
+
+    // On limite les valeurs des positions maximales
+    sx1 = clamp_double(sx1, 0.0, textureWidth  - 1.0);
+    sy1 = clamp_double(sy1, 0.0, textureHeight - 1.0);
+    sx2 = clamp_double(sx2, 0.0, textureWidth  - 1.0);
+    sy2 = clamp_double(sy2, 0.0, textureHeight - 1.0);
+
+    // Calculer le rectangle source à partir de la texture
+    SDL_Rect srcRect = (SDL_Rect){
+        .x = smallest((int)sx1, (int)sx2),
+        .y = smallest((int)sy1, (int)sy2),
+        .w = abs((int)sx2 - (int)sx1) + 1,
+        .h = abs((int)sy2 - (int)sy1) + 1
+    };
+
+
+
+    // Rectangle de destination
+    SDL_Rect destRect;
+
+    // Destination : fenêtre de rendu, ajustée au nouveau zoom
+    destRect.w = (int)(textureWidth * (zoom / lastZoom));
+    destRect.h = (int)(textureHeight * (zoom / lastZoom));
+
+
+    // Décalage du centre (par rapport à la fenêtre)
+    int shiftX = (int)((lastOffsetX - offsetX) * zoom);
+    int shiftY = (int)((lastOffsetY - offsetY) * zoom);
+    
+    destRect.x = (windowWidth - destRect.w) / 2 + shiftX;
+    destRect.y = (windowHeight - destRect.h) / 2 + shiftY;
+
+
+    // Ne compense pas si on est déjà au bord (sinon bugs visuels)
+    // Détecte si on touche le bord droit ou bas de la texture
+    
+    double offsetIntDoubleDestW;
+    double offsetIntDoubleDestH;
+
+    if (destRect.x + destRect.w > windowWidth) {
+        offsetIntDoubleDestW = (srcRect.w - fabs(sx2 - sx1));
+    } else {
+        offsetIntDoubleDestW = -(srcRect.w - fabs(sx2 - sx1));
+    }
+
+    if (destRect.y + destRect.h > windowHeight) {
+        offsetIntDoubleDestH = (srcRect.h - fabs(sy2 - sy1));
+    } else {
+        offsetIntDoubleDestH = -(srcRect.h - fabs(sy2 - sy1));
+    }
+    
+    // Clamp le destRect à l’intérieur de la fenêtre
+    if (destRect.x < 0) {
+        destRect.w += destRect.x - offsetIntDoubleDestW * (zoom / lastZoom);
+        destRect.x = 0;
+    }
+    if (destRect.y < 0) {
+        destRect.h += destRect.y - offsetIntDoubleDestH * (zoom / lastZoom);
+        destRect.y = 0;
+    }
+    if (destRect.x + destRect.w > windowWidth) {
+        destRect.w = windowWidth - destRect.x + offsetIntDoubleDestW * (zoom / lastZoom);
+    }
+    if (destRect.y + destRect.h > windowHeight) {
+        destRect.h = windowHeight - destRect.y + offsetIntDoubleDestH * (zoom / lastZoom);
+    }
+    
+
+    // Calcule le sous-pixel offset à partir de la vraie position flottante
+    double fractalShiftX = (sx1 < sx2 ? sx1 : sx2) - (double)srcRect.x;
+    double fractalShiftY = (sy1 < sy2 ? sy1 : sy2) - (double)srcRect.y;
+
+    double subPixelOffsetX = fractalShiftX * (zoom / lastZoom);
+    double subPixelOffsetY = fractalShiftY * (zoom / lastZoom);
+
+    // Ajuste la destination
+    destRect.x -= (int)round(subPixelOffsetX);
+    destRect.y -= (int)round(subPixelOffsetY);
+
+    // Ajuste la source (pour rester aligné avec le zoom)
+    srcRect.x += (int)floor(subPixelOffsetX / (zoom / lastZoom));
+    srcRect.y += (int)floor(subPixelOffsetY / (zoom / lastZoom));
+    
     
     // Efface l'écran en noir
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // noir opaque
     SDL_RenderClear(renderer);
     
+    
+    // Affichage de la flèche qui pointe vers la texture si en dehors de l'écran
+    if (destRect.x + destRect.w < 0 || destRect.x > windowWidth || destRect.y + destRect.h < 0 || destRect.y > windowHeight) {
+        int centerTexX = destRect.x + destRect.w / 2;
+        int centerTexY = destRect.y + destRect.h / 2;
+
+        int centerWinX = windowWidth / 2;
+        int centerWinY = windowHeight / 2;
+
+        double dx = centerTexX - centerWinX;
+        double dy = centerTexY - centerWinY;
+        
+        double angle = atan2(dy, dx); // angle en radians
+
+        // Distance à un bord (dépendant de l'angle)
+        double borderX = cos(angle);
+        double borderY = sin(angle);
+
+        // Trouve le facteur d’échelle pour toucher un bord
+        double scale = fmin(
+            fabs((windowWidth / 2.0 - 10) / borderX),
+            fabs((windowHeight / 2.0 - 10) / borderY)
+        );
+
+        // Coordonnées finales sur le bord
+        int arrowX = (int)(centerWinX + borderX * scale);
+        int arrowY = (int)(centerWinY + borderY * scale);
+        
+        SDL_Point arrow[4];
+        double size = 15;
+        double leftAngle = angle + M_PI * 0.75;
+        double rightAngle = angle - M_PI * 0.75;
+
+        arrow[0].x = arrowX;
+        arrow[0].y = arrowY;
+        arrow[1].x = arrowX + cos(leftAngle) * size;
+        arrow[1].y = arrowY + sin(leftAngle) * size;
+        arrow[2].x = arrowX + cos(rightAngle) * size;
+        arrow[2].y = arrowY + sin(rightAngle) * size;
+        arrow[3] = arrow[0]; // close triangle
+
+        SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // rouge
+        SDL_RenderDrawLines(renderer, arrow, 4);
+    }
+
     // Imprime la texture bien placée sur la cible sélectionnée avant la fonction
     SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
+    
+    // Dessiner un bord autour de la texture
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); // blanc opaque
+    SDL_RenderDrawRect(renderer, &destRect);
 }
 
 
