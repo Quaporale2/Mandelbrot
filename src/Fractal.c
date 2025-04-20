@@ -162,7 +162,7 @@ int calculate_iterations(void* arg);
 void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
-void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool frameRectOn);
+int draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool frameRectOn);
 
 
 
@@ -1656,12 +1656,14 @@ double clamp_double(double val, double min, double max) {
 
 
 // Appelle toute les fonctions nécéssaire a l'affichage de la texture proportionnel au zoom et au coordonnées
-void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, 
+int draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, 
                            double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool frameRectOn) {
 
-    // Récupère la taille de la texture
+    // Récupère la taille de la texture et vérifie sa validitée
     int textureWidth, textureHeight;
-    SDL_QueryTexture(texture, NULL, NULL, &textureWidth, &textureHeight);
+    if (SDL_QueryTexture(texture, NULL, NULL, &textureWidth, &textureHeight) != 0) {
+        return EXIT_FAILURE;
+    }
 
     // Calcule les coins dans l'ancien espace fractal (avant zoom)
     double fx1, fy1, fx2, fy2;
@@ -1820,6 +1822,8 @@ void draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, i
             SDL_RenderDrawRect(renderer, &frameRect);
         }
     }
+    
+    return EXIT_SUCCESS;
 }
 
 
