@@ -146,6 +146,8 @@ FractalList* pop_texture(FractalList** head, FractalList* toRemove, int* length)
 void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
 // Dessine une barre de progression ainsi qu'un texte
 void draw_loading_bar(SDL_Renderer* renderer, TTF_Font* font, char* text, int progress, int width, int height);
+// Affiche un double de facon normale ou scientifique en fonction de sa taille
+void format_float_auto(char* buffer, size_t size, double value);
 
 // Calcul des positions sur l'écran par rapport au positions dans la fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy);
@@ -1134,11 +1136,21 @@ int main(int argc, char *argv[]) {
 
             // Paramètres de l'image, bord bas gauche
             sprintf(displayBuffer, "Nombre d'itérations max: %d", max_iteration);
-            render_text(renderer, font, displayBuffer, 10, windowHeight - verticalSpacing, ORIGIN_UP_LEFT);
-            sprintf(displayBuffer, "Zoom actuel: %f", zoom);
+            
+            
+            // Pour l'affichage normal ou scientifique des valeurs
+            char zoomBuffer[64], offsetXBuffer[64], offsetYBuffer[64];
+
+            format_float_auto(zoomBuffer, sizeof(zoomBuffer), zoom);
+            format_float_auto(offsetXBuffer, sizeof(offsetXBuffer), offsetX);
+            format_float_auto(offsetYBuffer, sizeof(offsetYBuffer), offsetY);
+
+            snprintf(displayBuffer, sizeof(displayBuffer), "Zoom actuel: %s", zoomBuffer);
             render_text(renderer, font, displayBuffer, 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_LEFT);
-            sprintf(displayBuffer, "Offset actuel: X: %f   Y: %f", offsetX, offsetY);
+
+            snprintf(displayBuffer, sizeof(displayBuffer), "Offset actuel: X: %s   Y: %s", offsetXBuffer, offsetYBuffer);
             render_text(renderer, font, displayBuffer, 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_LEFT);
+
 
             // Controles, bord bas droite
             if (activateAntialiasing) {
@@ -1595,6 +1607,17 @@ void draw_loading_bar(SDL_Renderer* renderer, TTF_Font* font, char* text, int pr
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderDrawRect(renderer, &backgroundRect);
 }
+
+
+// Affiche un double de facon normale ou scientifique en fonction de sa taille
+void format_float_auto(char* buffer, size_t size, double value) {
+    if (fabs(value) < 0.001 || fabs(value) > 100000) {
+        snprintf(buffer, size, "%.2e", value);  // notation scientifique
+    } else {
+        snprintf(buffer, size, "%.6f", value);  // notation décimale classique
+    }
+}
+
 
 
 // transforme les coordonnée de l'écran en coordonnée de fractale
