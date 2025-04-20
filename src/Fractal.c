@@ -56,11 +56,6 @@ typedef struct {
     double offsetY;
 } FractalView;
 
-// Liste de l'historique des zooms
-FractalView history[MAX_HISTORY];
-int historyIndex = -1;
-
-
 
 // Pour la séparation en un deuxième thread lors du calcul
 typedef struct {
@@ -111,14 +106,6 @@ typedef enum {
     RAINBOW = 3
 } ColorSchemes;
 
-// La palette de couleur que va utiliser le Mandelbrot
-SDL_Color palette[PALETTE_SIZE];
-
-
-// Pour la police d'écriture
-extern unsigned char DejaVuSans_ttf[];
-extern unsigned int DejaVuSans_ttf_len;
-
 
 
 // Chaine de pointeurs pour la liste de textures
@@ -133,31 +120,42 @@ typedef struct FractalList {
 
 
 
+// Pour récupérer les données de la police d'écriture
+extern unsigned char DejaVuSans_ttf[];
+extern unsigned int DejaVuSans_ttf_len;
+
+
+
 // Charge une police d'écriture depuis la mémoire (un fichier .c)
 TTF_Font* load_font_from_memory(int size);
 
 // Gestion des palette de couleurs du Mandelbrot
-void generate_palette_hot_cold();
-void generate_palette_white_black();
-void generate_palette_rainbow();
+void generate_palette_hot_cold(SDL_Color palette[PALETTE_SIZE]);
+void generate_palette_white_black(SDL_Color palette[PALETTE_SIZE]);
+void generate_palette_rainbow(SDL_Color palette[PALETTE_SIZE]);
 
 // Gestion de l'historique de position de l'image
-void push_view(double zoom, double offsetX, double offsetY);
-bool pop_view(double *zoom, double *offsetX, double *offsetY);
+void push_view(FractalView history[MAX_HISTORY], int* historyIndex, double zoom, double offsetX, double offsetY);
+bool pop_view(FractalView history[MAX_HISTORY], int* historyIndex, double *zoom, double *offsetX, double *offsetY);
 
 // Gestion création et suppression de texture de la liste
-FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY, int *number);
-FractalList* pop_texture(FractalList** head, FractalList* toRemove);
+FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY, int *number, int* length);
+FractalList* pop_texture(FractalList** head, FractalList* toRemove, int* length);
 
 // Dessine le texte passé en paramètre
 void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
+// Dessine une barre de progression ainsi qu'un texte
+void draw_loading_bar(SDL_Renderer* renderer, TTF_Font* font, char* text, int progress, int width, int height);
 
 // Calcul des positions sur l'écran par rapport au positions dans la fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy);
+// Renvoie la valeur passée, limitée au minimum et au maximum passé
+double clamp_double(double val, double min, double max);
 
 // Calcul de l'image du Mandelbrot
 int calculate_iterations(void* arg);
 #ifdef __linux__
+    // Calcul de mandelbrot utilisant les bibliothèques mpfr et gmp pour une précision théoriquement infinie
     int calculate_iterations_high_precision(void* arg);
 #endif
 
@@ -165,7 +163,8 @@ int calculate_iterations(void* arg);
 void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
-int draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool selectTextureOn, SDL_Color* frameRectColor, bool arrowOn);
+int draw_all_textures(SDL_Renderer *renderer, int windowWidth, int windowHeight, double zoom, double offsetX, double offsetY, 
+                      FractalList* texturesList, FractalList* selectedTexture, bool selectTextureOn);
 
 
 
@@ -290,6 +289,7 @@ int main(int argc, char *argv[]) {
     
     // La liste de textures calculées du fractal
     FractalList* fractalList = NULL;
+    int fractalListLength = 0;
     FractalList* newFractalElement = NULL;
     
     
@@ -313,19 +313,28 @@ int main(int argc, char *argv[]) {
     task.finished = &finished;
     task.shouldStop = false;
 
+    // le pointeur vers le thread de calcul en cours
     SDL_Thread* currentCalcThread = NULL;
 
+
+    // La palette de couleur que va utiliser le Mandelbrot
+    SDL_Color palette[PALETTE_SIZE];
     // Génère la palette de couleurs qui va servir à colorer le mandelbrot
     switch (colorScheme) {
         case HOT_COLD:
-            generate_palette_hot_cold();
+            generate_palette_hot_cold(palette);
             break;
         case WHITE_BLACK:
-            generate_palette_white_black();
+            generate_palette_white_black(palette);
             break;
         case RAINBOW:
-            generate_palette_rainbow();
+            generate_palette_rainbow(palette);
     }
+    
+    
+    // Liste de l'historique des zooms
+    FractalView history[MAX_HISTORY];
+    int historyIndex = -1;
     
     
     // Initialise la police d'écriture
@@ -404,7 +413,7 @@ int main(int argc, char *argv[]) {
             }
             // Revient en arrière dans l'historique sur clic gauche
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && !rightDragging && initialClickDone && !menuMode) {
-                if (pop_view(&zoom, &offsetX, &offsetY)) {
+                if (pop_view(history, &historyIndex, &zoom, &offsetX, &offsetY)) {
                     redrawInterface = true;
                 }
             }
@@ -426,7 +435,7 @@ int main(int argc, char *argv[]) {
 
                 // 3. Mémoriser le type d’action (historique)
                 if (event.type != lastActionType) {
-                    push_view(zoom, offsetX, offsetY);
+                    push_view(history, &historyIndex, zoom, offsetX, offsetY);
                     lastActionType = SDL_MOUSEWHEEL;
                 }
 
@@ -453,7 +462,7 @@ int main(int argc, char *argv[]) {
                     case SDLK_UP:
                         // Si on vient de changer d'action de mouvement, enregistrer la position dans l'historique
                         if (event.type != lastActionType || event.key.keysym.sym != lastActionValue) {
-                            push_view(zoom, offsetX, offsetY);
+                            push_view(history, &historyIndex, zoom, offsetX, offsetY);
                             lastActionType = SDL_KEYDOWN;
                             lastActionValue = event.key.keysym.sym;
                         }
@@ -464,7 +473,7 @@ int main(int argc, char *argv[]) {
                     case SDLK_DOWN:
                         // Si on vient de changer d'action de mouvement, enregistrer la position dans l'historique
                         if (event.type != lastActionType || event.key.keysym.sym != lastActionValue) {
-                            push_view(zoom, offsetX, offsetY);
+                            push_view(history, &historyIndex, zoom, offsetX, offsetY);
                             lastActionType = SDL_KEYDOWN;
                             lastActionValue = event.key.keysym.sym;
                         }
@@ -475,7 +484,7 @@ int main(int argc, char *argv[]) {
                     case SDLK_LEFT:
                         // Si on vient de changer d'action de mouvement, enregistrer la position dans l'historique
                         if (event.type != lastActionType || event.key.keysym.sym != lastActionValue) {
-                            push_view(zoom, offsetX, offsetY);
+                            push_view(history, &historyIndex, zoom, offsetX, offsetY);
                             lastActionType = SDL_KEYDOWN;
                             lastActionValue = event.key.keysym.sym;
                         }
@@ -486,7 +495,7 @@ int main(int argc, char *argv[]) {
                     case SDLK_RIGHT:
                         // Si on vient de changer d'action de mouvement, enregistrer la position dans l'historique
                         if (event.type != lastActionType || event.key.keysym.sym != lastActionValue) {
-                            push_view(zoom, offsetX, offsetY);
+                            push_view(history, &historyIndex, zoom, offsetX, offsetY);
                             lastActionType = SDL_KEYDOWN;
                             lastActionValue = event.key.keysym.sym;
                         }
@@ -497,7 +506,7 @@ int main(int argc, char *argv[]) {
                     case SDLK_EQUALS:
                         // Si on vient de changer d'action de mouvement, enregistrer la position dans l'historique
                         if (event.type != lastActionType || event.key.keysym.sym != lastActionValue) {
-                            push_view(zoom, offsetX, offsetY);
+                            push_view(history, &historyIndex, zoom, offsetX, offsetY);
                             lastActionType = SDL_KEYDOWN;
                             lastActionValue = event.key.keysym.sym;
                         }
@@ -508,7 +517,7 @@ int main(int argc, char *argv[]) {
                     case SDLK_MINUS:
                         // Si on vient de changer d'action de mouvement, enregistrer la position dans l'historique
                         if (event.type != lastActionType || event.key.keysym.sym != lastActionValue) {
-                            push_view(zoom, offsetX, offsetY);
+                            push_view(history, &historyIndex, zoom, offsetX, offsetY);
                             lastActionType = SDL_KEYDOWN;
                             lastActionValue = event.key.keysym.sym;
                         }
@@ -564,15 +573,15 @@ int main(int argc, char *argv[]) {
                         switch (colorScheme) {
                             case HOT_COLD:
                                 colorScheme = RAINBOW;
-                                generate_palette_white_black();
+                                generate_palette_white_black(palette);
                                 break;
                             case WHITE_BLACK:
                                 colorScheme = HOT_COLD;
-                                generate_palette_hot_cold();
+                                generate_palette_hot_cold(palette);
                                 break;
                             case RAINBOW:
                                 colorScheme = WHITE_BLACK;
-                                generate_palette_rainbow();
+                                generate_palette_rainbow(palette);
                                 break;
                         }
                         redrawInterface = true;
@@ -623,7 +632,7 @@ int main(int argc, char *argv[]) {
                             }
                             
                             // Supprime la texture sélectionnée
-                            pop_texture(&fractalList, selectedImage);
+                            pop_texture(&fractalList, selectedImage, &fractalListLength);
                             
                             // Sélectionne l'image la plus proche disponible
                             selectedImage = newSelectedImage;
@@ -667,7 +676,7 @@ int main(int argc, char *argv[]) {
                     leftDragging = true; // on considère que c’est un vrai glissement
                     // Sauvegarde dans l'historique au début du drag
                     if (event.type != lastActionType) {
-                        push_view(zoom, offsetX, offsetY);
+                        push_view(history, &historyIndex, zoom, offsetX, offsetY);
                         lastActionType = event.type;
                     }
                 }
@@ -705,7 +714,7 @@ int main(int argc, char *argv[]) {
                 rightSelecting = false;
                 rightDragging = false;
                 
-                push_view(zoom, offsetX, offsetY);
+                push_view(history, &historyIndex, zoom, offsetX, offsetY);
 
                 int x1 = smallest(selectStart.x, selectEnd.x);
                 int x2 = largest(selectStart.x, selectEnd.x);
@@ -853,18 +862,21 @@ int main(int argc, char *argv[]) {
         // Si on est en attente du dessin de la fractale
         if (fractalCalcPending) {
         
+            // Pas besoin de mettre à jour l'interface, juste le chargement
             if (redrawInterface) {
                 redrawLoading = true;
             }
-            // Calcul pas encore terminé
+            // Calcul pas encore terminé, on empêche un nouveau calcul
             if (!finished) {
                 calculateImage = false;
             }
+            // Si progrès à évolué, actualisé l'affichage
             if (progress != lastProgress) {
                 redrawInterface = true;
                 redrawLoading = true;
                 lastProgress = progress;
             }
+            
             // Calcul terminé
             if (finished) {
             
@@ -877,6 +889,9 @@ int main(int argc, char *argv[]) {
                     // On ajoute la texture à la liste des textures
                     newIterationsCalculated = true;
                 }
+                
+                // Réinitialise le pointeur vers le thread de calcul
+                currentCalcThread = NULL;
                 
                 redrawInterface = true;    
                 fractalCalcPending = false;  
@@ -898,7 +913,7 @@ int main(int argc, char *argv[]) {
             if (newIterationsCalculated) {
 
                 // Pousse la nouvelle texture dans la liste
-                newFractalElement = push_texture(&fractalList, log10(zoom), lastZoom, lastOffsetX, lastOffsetY, NULL);
+                newFractalElement = push_texture(&fractalList, log10(zoom), lastZoom, lastOffsetX, lastOffsetY, NULL, &fractalListLength);
                 // Si aucune image sélectionnée, on sélectionne celle qui vient d'être créée
                 selectedImage = newFractalElement;
 
@@ -942,7 +957,11 @@ int main(int argc, char *argv[]) {
         // Si on doit remettre a jour toute les textures de la liste
         if (renderAllIterations) {
         
+            // Sélectionne l'écran comme cible SDL
+            SDL_SetRenderTarget(renderer, NULL);
+        
             // Boucle qui parcours les éléments de la liste
+            int actualElementCounter = 1;
             FractalList* actualFractalList = fractalList;
             while (actualFractalList != NULL) {
 
@@ -966,6 +985,27 @@ int main(int argc, char *argv[]) {
                 // Fait le rendu sur la texture
                 render_iterations(renderer, actualFractalList->iterationMap, actualFractalList->width, actualFractalList->height, palette, max_iteration, actual_max, activateAntialiasing);
                 
+
+                // Sélectionne l'écran comme cible SDL
+                SDL_SetRenderTarget(renderer, NULL);
+
+                // Efface l'écran en noir
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // noir opaque
+                SDL_RenderClear(renderer);
+                
+                // Dessine toute les textures de la liste, bien placé sur l'écran
+                draw_all_textures(renderer, windowWidth, windowHeight, zoom, offsetX, offsetY,
+                                  fractalList, selectedImage, selectTextureOn);
+                
+                // Dessine la barre de chargement avec la progression actuelle
+                draw_loading_bar(renderer, font, "Chargement en cours...", (int)(((float)actualElementCounter / (float)fractalListLength) * 100), windowWidth, windowHeight);
+                
+                // Afficher tout les dessins à l'écran
+                SDL_RenderPresent(renderer);
+                
+                
+                // Passe à l'élément suivant
+                actualElementCounter++;
                 actualFractalList = actualFractalList->next;
             }
             
@@ -1032,6 +1072,7 @@ int main(int argc, char *argv[]) {
                 }
             }
             
+            // Met à jour les informations passées au second thread de calcul
             task.max_iteration = max_iteration;
             task.zoom = zoom;
             task.offsetX = offsetX;
@@ -1041,6 +1082,7 @@ int main(int argc, char *argv[]) {
             task.antialiasing = activateAntialiasing;
             task.shouldStop = false;
 
+            // Donner le choix entre mode normal et précis pour linux, et appeller la bonne fonction
             #ifdef __linux__
                 if (advancedMode) {
                     currentCalcThread = SDL_CreateThread(calculate_iterations_high_precision, "CalcFractalThread", &task);
@@ -1052,7 +1094,6 @@ int main(int argc, char *argv[]) {
             #endif
             
 
-            
             // On déclare que le calcul est en cours
             fractalCalcPending = true;
             lastProgress = 1000;
@@ -1073,42 +1114,10 @@ int main(int argc, char *argv[]) {
             // Efface l'écran en noir
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // noir opaque
             SDL_RenderClear(renderer);
-
-            // Parcours la liste de textures
-            //double logCurrentZoom = log10(zoom);
-            FractalList* actualFractalList = fractalList;
-            while (actualFractalList != NULL) {
             
-                // Si le zoom de la texture est trop grand par rapport au zoom actuel, on ne l'affiche pas
-                //if (actualFractalList->logZoom - logCurrentZoom < 3) {
-                if (true) {
-
-                    SDL_Color frameRectColor;
-                    bool drawArrow, drawFrameRect;
-
-                    // Si on n'est pas en mode sélection de texture, n'afficher ni la flèche ni les contours
-                    if (!selectTextureOn) {
-                        drawFrameRect = false;
-                        drawArrow = false;
-                    // Si on est en mode sélection de textures et qu'on est sur l'image sélectionnée, afficher flèches et contours verts
-                    } else if (actualFractalList == selectedImage) {
-                        drawFrameRect = true;
-                        frameRectColor = (SDL_Color){0, 255, 0, 255};
-                        drawArrow = true;
-                    // Si on est en mode sélection de textures et que l'on n'est pas sur l'image sélectionnée, afficher contours blanc
-                    } else if (actualFractalList != selectedImage) {
-                        drawFrameRect = true;
-                        frameRectColor = (SDL_Color){255, 255, 255, 255};
-                        drawArrow = false;
-                    }
-
-                    // Dessine la texture de la liste
-                    draw_mandelbrot_well_placed(renderer, actualFractalList->texture, windowWidth, windowHeight, zoom,
-                                                actualFractalList->zoom, actualFractalList->offsetX, actualFractalList->offsetY, offsetX, offsetY, drawFrameRect, &frameRectColor, drawArrow);
-                }
-                
-                actualFractalList = actualFractalList->next;
-            }
+            // Dessine toute les textures de la liste, bien placé sur l'écran
+            draw_all_textures(renderer, windowWidth, windowHeight, zoom, offsetX, offsetY,
+                              fractalList, selectedImage, selectTextureOn);
 
             drawingMade = true;
         }
@@ -1189,42 +1198,22 @@ int main(int argc, char *argv[]) {
             drawingMade = true;
         }
         
-        // Si on est en train de calculer la prochaine image, on l'affiche à l'écran
+        // Si on est en train de calculer la prochaine image, on affiche un chargement a l'écran
         if (redrawLoading && fractalCalcPending) {
         
             // Sélectionne l'écran comme cible
             SDL_SetRenderTarget(renderer, NULL);
         
-            // Texte principal
-            render_text(renderer, font, "Chargement en cours...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
-            
-            // Coordonnées de base
-            int barWidth = windowWidth * 0.4f;  // 40% de la largeur de la fenêtre
-            int barHeight = 20;
-            int barX = (windowWidth - barWidth) / 2;
-            int barY = windowHeight / 2 + 25;
+            draw_loading_bar(renderer, font, "Chargement en cours...", progress, windowWidth, windowHeight);
 
-            // Bordure de la barre (fond)
-            SDL_Rect backgroundRect = { barX, barY, barWidth, barHeight };
-            SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255);  // gris foncé
-            SDL_RenderFillRect(renderer, &backgroundRect);
-
-            // Barre de progression (remplissage)
-            int filledWidth = (progress * barWidth) / 100;
-            SDL_Rect filledRect = { barX, barY, filledWidth, barHeight };
-            SDL_SetRenderDrawColor(renderer, 50, 200, 50, 255);  // vert clair
-            SDL_RenderFillRect(renderer, &filledRect);
-
-            // Optionnel : contour blanc
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL_RenderDrawRect(renderer, &backgroundRect);
-            
             redrawLoading = false;
             drawingMade = true;
         }
         
+        // Si on attend que l'utilisate clique dans la fenêtre après un changement de taille
         if (redrawLoading && !initialClickDone) {
 
+            // Sélectionne l'écran comme cible
             SDL_SetRenderTarget(renderer, NULL);
             
             render_text(renderer, font, "Cliquez pour réactiver...", windowWidth / 2, windowHeight / 2, ORIGIN_MIDDLE_CENTER);
@@ -1263,7 +1252,7 @@ int main(int argc, char *argv[]) {
             drawingMade = true;
         }
         
-        // Si on a dessiné sur l'écran, l'afficher
+        // Si on a dessiné sur l'écran, tout afficher
         if (drawingMade) {
             SDL_SetRenderTarget(renderer, NULL);
             SDL_RenderPresent(renderer);
@@ -1284,7 +1273,7 @@ int main(int argc, char *argv[]) {
 
     // Vide la listes de textures
     while (fractalList != NULL) {
-        fractalList = pop_texture(&fractalList, fractalList);
+        fractalList = pop_texture(&fractalList, fractalList, &fractalListLength);
     }
     
     // On attend que le second thread ai bien terminé
@@ -1327,8 +1316,11 @@ TTF_Font* load_font_from_memory(int size) {
 }
 
 
+
+
+
 // Génère une palette de couleur allant dans couleurs froides au couleurs chaudes
-void generate_palette_hot_cold() {
+void generate_palette_hot_cold(SDL_Color palette[PALETTE_SIZE]) {
     for (int i = 0; i < PALETTE_SIZE; i++) {
         float t = (float)i / (PALETTE_SIZE - 1);
         palette[i].r = (int)(9 * (1 - t) * t * t * t * 255);         // rouge
@@ -1337,8 +1329,9 @@ void generate_palette_hot_cold() {
     }
 }
 
+
 // Génère une palette de couleur allant dans couleurs de noir à blanc
-void generate_palette_white_black() {
+void generate_palette_white_black(SDL_Color palette[PALETTE_SIZE]) {
     for (int i = 0; i < PALETTE_SIZE; i++) {
         float t = (float)i / (PALETTE_SIZE - 1);
         palette[i].r = (int)(255 * t); // rouge
@@ -1347,8 +1340,9 @@ void generate_palette_white_black() {
     }
 }
 
+
 // Génère une palette de couleurs arc-en-ciel
-void generate_palette_rainbow() {
+void generate_palette_rainbow(SDL_Color palette[PALETTE_SIZE]) {
     for (int i = 0; i < PALETTE_SIZE; i++) {
         float t = (float)i / (PALETTE_SIZE - 1);
 
@@ -1389,34 +1383,40 @@ void generate_palette_rainbow() {
 }
 
 
-
 // Ajoute la vue actuelle a l'historique
-void push_view(double zoom, double offsetX, double offsetY) {
-    if (historyIndex < MAX_HISTORY - 1) {
-        historyIndex++;
-        history[historyIndex].zoom = zoom;
-        history[historyIndex].offsetX = offsetX;
-        history[historyIndex].offsetY = offsetY;
+void push_view(FractalView history[MAX_HISTORY], int* historyIndex, double zoom, double offsetX, double offsetY) {
+    if (*historyIndex < MAX_HISTORY - 1) {
+        *historyIndex = *historyIndex + 1;
+        history[*historyIndex].zoom = zoom;
+        history[*historyIndex].offsetX = offsetX;
+        history[*historyIndex].offsetY = offsetY;
     }
 }
 
+
 // Retire une vue de l'historique et la mettre dans le zoom et l'offset actuel
-bool pop_view(double *zoom, double *offsetX, double *offsetY) {
-    if (historyIndex >= 0) {
-        *zoom = history[historyIndex].zoom;
-        *offsetX = history[historyIndex].offsetX;
-        *offsetY = history[historyIndex].offsetY;
-        historyIndex--;
+bool pop_view(FractalView history[MAX_HISTORY], int* historyIndex, double *zoom, double *offsetX, double *offsetY) {
+    if (*historyIndex >= 0) {
+        *zoom = history[*historyIndex].zoom;
+        *offsetX = history[*historyIndex].offsetX;
+        *offsetY = history[*historyIndex].offsetY;
+        *historyIndex = *historyIndex - 1;
         return true;
     }
     return false;
 }
 
-FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY, int *number) {
+
+// Ajouter une texture dans la liste, en fonction de son zoom
+FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY, int *number, int* length) {
     FractalList* new_node = (FractalList*)malloc(sizeof(FractalList));
     if (!new_node) {
         SDL_Log("Erreur d'allocation mémoire pour la liste des textures de fractales.");
         exit(EXIT_FAILURE);
+    }
+    
+    if (length != NULL) {
+        *length = *length + 1;
     }
 
     new_node->texture = NULL;
@@ -1464,10 +1464,14 @@ FractalList* push_texture(FractalList** head, double logZoom, double zoom, doubl
 }
 
 
-// Supprime un nœud donné de la liste chaînée, quel que soit son emplacement
-FractalList* pop_texture(FractalList** head, FractalList* toRemove) {
+// Retire une des textures données de la liste
+FractalList* pop_texture(FractalList** head, FractalList* toRemove, int* length) {
     if (toRemove == NULL || head == NULL || *head == NULL) {
         return NULL;
+    }
+    
+    if (length != NULL) {
+        *length = *length - 1;
     }
 
     // Si c'est la tête de liste
@@ -1557,10 +1561,52 @@ void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x
 }
 
 
+// Dessine une barre de chargement avec une progression donnée
+void draw_loading_bar(SDL_Renderer* renderer, TTF_Font* font, char* text, int progress, int width, int height) {
+
+    // Texte au dessus de la barre de chargement
+    if (text != NULL) {
+        render_text(renderer, font, text, width / 2, height / 2, ORIGIN_MIDDLE_CENTER);
+    }
+    
+    // Coordonnées de base
+    int barWidth = width * 0.4f;  // 40% de la largeur de la fenêtre
+    int barHeight = 20;
+    int barX = (width - barWidth) / 2;
+    int barY = height / 2 + 25;
+
+    // Bordure de la barre (fond)
+    SDL_Rect backgroundRect = { barX, barY, barWidth, barHeight };
+    SDL_SetRenderDrawColor(renderer, 100, 100, 100, 255);  // gris foncé
+    SDL_RenderFillRect(renderer, &backgroundRect);
+
+    // Calcul de la couleur entre rouge et vert
+    int red = 255 * (100 - progress) / 100;
+    int green = 255 * progress / 100;
+    int blue = 0;
+
+    // Barre de progression (remplissage)
+    int filledWidth = (progress * barWidth) / 100;
+    SDL_Rect filledRect = { barX, barY, filledWidth, barHeight };
+    SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+    SDL_RenderFillRect(renderer, &filledRect);
+
+    // Optionnel : contour blanc
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderDrawRect(renderer, &backgroundRect);
+}
+
+
 // transforme les coordonnée de l'écran en coordonnée de fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy) {
     *fx = (x - width / 2) / zoom + offsetX;
     *fy = (y - height / 2) / zoom + offsetY;
+}
+
+
+// Clamp helper
+double clamp_double(double val, double min, double max) {
+    return (val < min) ? min : (val > max) ? max : val;
 }
 
 
@@ -1768,190 +1814,212 @@ void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, 
 }
 
 
-// Clamp helper
-double clamp_double(double val, double min, double max) {
-    return (val < min) ? min : (val > max) ? max : val;
-}
-
-
 // Appelle toute les fonctions nécéssaire a l'affichage de la texture proportionnel au zoom et au coordonnées
-int draw_mandelbrot_well_placed(SDL_Renderer *renderer, SDL_Texture *texture, int windowWidth, int windowHeight, double zoom, double lastZoom, 
-                           double lastOffsetX, double lastOffsetY, double offsetX, double offsetY, bool selectTextureOn, SDL_Color* frameRectColor, bool arrowOn) {
+int draw_all_textures(SDL_Renderer *renderer, int windowWidth, int windowHeight, double zoom, double offsetX, double offsetY, 
+                      FractalList* texturesList, FractalList* selectedTexture, bool selectTextureOn) {
 
-    // Récupère la taille de la texture et vérifie sa validitée
-    int textureWidth, textureHeight;
-    if (SDL_QueryTexture(texture, NULL, NULL, &textureWidth, &textureHeight) != 0) {
-        return EXIT_FAILURE;
-    }
+    bool errorValue = false;
 
-    // Calcule les coins dans l'ancien espace fractal (avant zoom)
-    double fx1, fy1, fx2, fy2;
-    screen_to_fractal(0, 0, zoom, offsetX, offsetY, windowWidth, windowHeight, &fx1, &fy1);
-    screen_to_fractal(windowWidth, windowHeight, zoom, offsetX, offsetY, windowWidth, windowHeight, &fx2, &fy2);
-    
-    
-    // Reprojette les coins (fx1, fy1) et (fx2, fy2) en pixels dans l’ancienne texture
-    double sx1 = (fx1 - lastOffsetX) * lastZoom + textureWidth / 2.0;
-    double sy1 = (fy1 - lastOffsetY) * lastZoom + textureHeight / 2.0;
-    double sx2 = (fx2 - lastOffsetX) * lastZoom + textureWidth / 2.0;
-    double sy2 = (fy2 - lastOffsetY) * lastZoom + textureHeight / 2.0;
-
-
-    // On limite les valeurs des positions maximales
-    sx1 = clamp_double(sx1, 0.0, textureWidth  - 1.0);
-    sy1 = clamp_double(sy1, 0.0, textureHeight - 1.0);
-    sx2 = clamp_double(sx2, 0.0, textureWidth  - 1.0);
-    sy2 = clamp_double(sy2, 0.0, textureHeight - 1.0);
-
-    // Calculer le rectangle source à partir de la texture
-    SDL_Rect srcRect = (SDL_Rect){
-        .x = smallest((int)sx1, (int)sx2),
-        .y = smallest((int)sy1, (int)sy2),
-        .w = abs((int)sx2 - (int)sx1) + 1,
-        .h = abs((int)sy2 - (int)sy1) + 1
-    };
-
-
-
-    // Rectangle de destination
-    SDL_Rect destRect;
-
-    // Destination : fenêtre de rendu, ajustée au nouveau zoom
-    destRect.w = (int)(textureWidth * (zoom / lastZoom));
-    destRect.h = (int)(textureHeight * (zoom / lastZoom));
-
-    destRect.x = (windowWidth - destRect.w) / 2 + (int)((lastOffsetX - offsetX) * zoom);
-    destRect.y = (windowHeight - destRect.h) / 2 + (int)((lastOffsetY - offsetY) * zoom);
-    
-
-
-    // Ne compense pas si on est déjà au bord (sinon bugs visuels)
-    // Détecte si on touche le bord droit ou bas de la texture
-    
-    double offsetIntDoubleDestW;
-    double offsetIntDoubleDestH;
-
-    if (destRect.x + destRect.w > windowWidth) {
-        offsetIntDoubleDestW = (srcRect.w - fabs(sx2 - sx1));
-    } else {
-        offsetIntDoubleDestW = -(srcRect.w - fabs(sx2 - sx1));
-    }
-
-    if (destRect.y + destRect.h > windowHeight) {
-        offsetIntDoubleDestH = (srcRect.h - fabs(sy2 - sy1));
-    } else {
-        offsetIntDoubleDestH = -(srcRect.h - fabs(sy2 - sy1));
-    }
-    
-    // Clamp le destRect à l’intérieur de la fenêtre
-    if (destRect.x < 0) {
-        destRect.w += destRect.x - offsetIntDoubleDestW * (zoom / lastZoom);
-        destRect.x = 0;
-    }
-    if (destRect.y < 0) {
-        destRect.h += destRect.y - offsetIntDoubleDestH * (zoom / lastZoom);
-        destRect.y = 0;
-    }
-    if (destRect.x + destRect.w > windowWidth) {
-        destRect.w = windowWidth - destRect.x + offsetIntDoubleDestW * (zoom / lastZoom);
-    }
-    if (destRect.y + destRect.h > windowHeight) {
-        destRect.h = windowHeight - destRect.y + offsetIntDoubleDestH * (zoom / lastZoom);
-    }
-    
-
-    // Calcule le sous-pixel offset à partir de la vraie position flottante
-    double fractalShiftX = (sx1 < sx2 ? sx1 : sx2) - (double)srcRect.x;
-    double fractalShiftY = (sy1 < sy2 ? sy1 : sy2) - (double)srcRect.y;
-
-    double subPixelOffsetX = fractalShiftX * (zoom / lastZoom);
-    double subPixelOffsetY = fractalShiftY * (zoom / lastZoom);
-
-    // Ajuste la destination
-    destRect.x -= (int)round(subPixelOffsetX);
-    destRect.y -= (int)round(subPixelOffsetY);
-
-    // Ajuste la source (pour rester aligné avec le zoom)
-    srcRect.x += (int)floor(subPixelOffsetX / (zoom / lastZoom));
-    srcRect.y += (int)floor(subPixelOffsetY / (zoom / lastZoom));
-    
-    bool isOutsideScreen = (destRect.x + destRect.w < 0 || destRect.x > windowWidth || destRect.y + destRect.h < 0 || destRect.y > windowHeight);
-    
-    // Affichage de la flèche qui pointe vers la texture si en dehors de l'écran
-    if (isOutsideScreen && arrowOn) {
-        int centerTexX = destRect.x + destRect.w / 2;
-        int centerTexY = destRect.y + destRect.h / 2;
-
-        int centerWinX = windowWidth / 2;
-        int centerWinY = windowHeight / 2;
-
-        double dx = centerTexX - centerWinX;
-        double dy = centerTexY - centerWinY;
-
-        double angle = atan2(dy, dx);
-
-        double borderX = cos(angle);
-        double borderY = sin(angle);
-
-        double scale = fmin(
-            fabs((windowWidth / 2.0 - 10) / borderX),
-            fabs((windowHeight / 2.0 - 10) / borderY)
-        );
-
-        int arrowX = (int)(centerWinX + borderX * scale);
-        int arrowY = (int)(centerWinY + borderY * scale);
-
-        double size = 30;
-        double leftAngle = angle + M_PI * 0.75;
-        double rightAngle = angle - M_PI * 0.75;
-
-        // Points du triangle
-        SDL_Vertex verts[3];
-        SDL_Color arrowColor = {255, 0, 0, 255}; // tu peux modifier cette variable ailleurs
-
-        verts[0].position.x = (float)arrowX;
-        verts[0].position.y = (float)arrowY;
-        verts[0].color = arrowColor;
-
-        verts[1].position.x = (float)(arrowX + cos(leftAngle) * size);
-        verts[1].position.y = (float)(arrowY + sin(leftAngle) * size);
-        verts[1].color = arrowColor;
-
-        verts[2].position.x = (float)(arrowX + cos(rightAngle) * size);
-        verts[2].position.y = (float)(arrowY + sin(rightAngle) * size);
-        verts[2].color = arrowColor;
-
-        // Dessine un triangle plein
-        SDL_RenderGeometry(renderer, NULL, verts, 3, NULL, 0);
-    }
-    
-    if (!isOutsideScreen) {
-    
-        // Imprime la texture bien placée sur la cible sélectionnée avant la fonction
-        SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
-        
-        // Si on dessine le frame autour de la texture
-        if (selectTextureOn) {
-            // Pour le dessin du rectangle autour de la texture
-            SDL_Rect frameRect = {
-                .x = destRect.x - 2,
-                .y = destRect.y - 2,
-                .w = destRect.w + 4,
-                .h = destRect.h + 4
-            };
+    // Parcours la liste chainée de textures
+    FractalList* actualTexture = texturesList;
+    while (actualTexture != NULL) {
             
-            if (frameRectColor == NULL) {
-                SDL_Color color = (SDL_Color){255, 255, 255, 255};
-                frameRectColor = &color;
-            }
-            
-            // Dessiner un bord autour de la texture
-            SDL_SetRenderDrawColor(renderer, frameRectColor->r, frameRectColor->g, frameRectColor->b, frameRectColor->a);
-            SDL_RenderDrawRect(renderer, &frameRect);
+        // Vérifie si la texture est valide, et l'ignore sinon
+        if (SDL_QueryTexture(actualTexture->texture, NULL, NULL, NULL, NULL) != 0) {
+            errorValue = true;
+            continue;
         }
+            
+        SDL_Color frameRectColor;
+        bool drawArrow, drawFrameRect;
+
+        // Si on n'est pas en mode sélection de texture, n'afficher ni la flèche ni les contours
+        if (!selectTextureOn) {
+            drawFrameRect = false;
+            drawArrow = false;
+        // Si on est en mode sélection de textures et qu'on est sur l'image sélectionnée, afficher flèches et contours verts
+        } else if (actualTexture == selectedTexture) {
+            drawFrameRect = true;
+            frameRectColor = (SDL_Color){0, 255, 0, 255};
+            drawArrow = true;
+        // Si on est en mode sélection de textures et que l'on n'est pas sur l'image sélectionnée, afficher contours blanc
+        } else if (actualTexture != selectedTexture) {
+            drawFrameRect = true;
+            frameRectColor = (SDL_Color){255, 255, 255, 255};
+            drawArrow = false;
+        }
+        
+        // Le ratio entre le zoom précédent et actuel
+        double zoomRatio = zoom / actualTexture->zoom;
+
+        // Calcule les coins dans l'ancien espace fractal (avant zoom)
+        double fx1, fy1, fx2, fy2;
+        screen_to_fractal(0, 0, zoom, offsetX, offsetY, windowWidth, windowHeight, &fx1, &fy1);
+        screen_to_fractal(windowWidth, windowHeight, zoom, offsetX, offsetY, windowWidth, windowHeight, &fx2, &fy2);
+        
+        
+        // Reprojette les coins (fx1, fy1) et (fx2, fy2) en pixels dans l’ancienne texture
+        double sx1 = (fx1 - actualTexture->offsetX) * actualTexture->zoom + actualTexture->width / 2.0;
+        double sy1 = (fy1 - actualTexture->offsetY) * actualTexture->zoom + actualTexture->height / 2.0;
+        double sx2 = (fx2 - actualTexture->offsetX) * actualTexture->zoom + actualTexture->width / 2.0;
+        double sy2 = (fy2 - actualTexture->offsetY) * actualTexture->zoom + actualTexture->height / 2.0;
+
+
+        // On limite les valeurs des positions maximales
+        sx1 = clamp_double(sx1, 0.0, actualTexture->width  - 1.0);
+        sy1 = clamp_double(sy1, 0.0, actualTexture->height - 1.0);
+        sx2 = clamp_double(sx2, 0.0, actualTexture->width  - 1.0);
+        sy2 = clamp_double(sy2, 0.0, actualTexture->height - 1.0);
+
+        // Calculer le rectangle source à partir de la texture
+        SDL_Rect srcRect = (SDL_Rect){
+            .x = smallest((int)sx1, (int)sx2),
+            .y = smallest((int)sy1, (int)sy2),
+            .w = abs((int)sx2 - (int)sx1) + 1,
+            .h = abs((int)sy2 - (int)sy1) + 1
+        };
+
+
+
+        // Rectangle de destination
+        SDL_Rect destRect;
+
+        // Destination : fenêtre de rendu, ajustée au nouveau zoom
+        destRect.w = (int)(actualTexture->width * zoomRatio);
+        destRect.h = (int)(actualTexture->height * zoomRatio);
+
+        destRect.x = (windowWidth - destRect.w) / 2 + (int)((actualTexture->offsetX - offsetX) * zoom);
+        destRect.y = (windowHeight - destRect.h) / 2 + (int)((actualTexture->offsetY - offsetY) * zoom);
+        
+
+
+        // Ne compense pas si on est déjà au bord (sinon bugs visuels)
+        // Détecte si on touche le bord droit ou bas de la texture
+        
+        double offsetIntDoubleDestW;
+        double offsetIntDoubleDestH;
+
+        if (destRect.x + destRect.w > windowWidth) {
+            offsetIntDoubleDestW = (srcRect.w - fabs(sx2 - sx1));
+        } else {
+            offsetIntDoubleDestW = -(srcRect.w - fabs(sx2 - sx1));
+        }
+
+        if (destRect.y + destRect.h > windowHeight) {
+            offsetIntDoubleDestH = (srcRect.h - fabs(sy2 - sy1));
+        } else {
+            offsetIntDoubleDestH = -(srcRect.h - fabs(sy2 - sy1));
+        }
+        
+        // Clamp le destRect à l’intérieur de la fenêtre
+        if (destRect.x < 0) {
+            destRect.w += destRect.x - offsetIntDoubleDestW * zoomRatio;
+            destRect.x = 0;
+        }
+        if (destRect.y < 0) {
+            destRect.h += destRect.y - offsetIntDoubleDestH * zoomRatio;
+            destRect.y = 0;
+        }
+        if (destRect.x + destRect.w > windowWidth) {
+            destRect.w = windowWidth - destRect.x + offsetIntDoubleDestW * zoomRatio;
+        }
+        if (destRect.y + destRect.h > windowHeight) {
+            destRect.h = windowHeight - destRect.y + offsetIntDoubleDestH * zoomRatio;
+        }
+        
+
+        // Calcule le sous-pixel offset à partir de la vraie position flottante
+        double fractalShiftX = (sx1 < sx2 ? sx1 : sx2) - (double)srcRect.x;
+        double fractalShiftY = (sy1 < sy2 ? sy1 : sy2) - (double)srcRect.y;
+
+        double subPixelOffsetX = fractalShiftX * zoomRatio;
+        double subPixelOffsetY = fractalShiftY * zoomRatio;
+
+        // Ajuste la destination
+        destRect.x -= (int)round(subPixelOffsetX);
+        destRect.y -= (int)round(subPixelOffsetY);
+
+        // Ajuste la source (pour rester aligné avec le zoom)
+        srcRect.x += (int)floor(subPixelOffsetX / zoomRatio);
+        srcRect.y += (int)floor(subPixelOffsetY / zoomRatio);
+        
+        // Si la texture à dessiner est en dehors de l'écran
+        bool isOutsideScreen = (destRect.x + destRect.w < 0 || destRect.x > windowWidth || destRect.y + destRect.h < 0 || destRect.y > windowHeight);
+        
+        // Affichage de la flèche qui pointe vers la texture si en dehors de l'écran
+        if (isOutsideScreen && drawArrow) {
+            int centerTexX = destRect.x + destRect.w / 2;
+            int centerTexY = destRect.y + destRect.h / 2;
+
+            int centerWinX = windowWidth / 2;
+            int centerWinY = windowHeight / 2;
+
+            double dx = centerTexX - centerWinX;
+            double dy = centerTexY - centerWinY;
+
+            double angle = atan2(dy, dx);
+
+            double borderX = cos(angle);
+            double borderY = sin(angle);
+
+            double scale = fmin(
+                fabs((windowWidth / 2.0 - 10) / borderX),
+                fabs((windowHeight / 2.0 - 10) / borderY)
+            );
+
+            int arrowX = (int)(centerWinX + borderX * scale);
+            int arrowY = (int)(centerWinY + borderY * scale);
+
+            double size = 30;
+            double leftAngle = angle + M_PI * 0.75;
+            double rightAngle = angle - M_PI * 0.75;
+
+            // Points du triangle
+            SDL_Vertex verts[3];
+            SDL_Color arrowColor = {255, 0, 0, 255}; // tu peux modifier cette variable ailleurs
+
+            verts[0].position.x = (float)arrowX;
+            verts[0].position.y = (float)arrowY;
+            verts[0].color = arrowColor;
+
+            verts[1].position.x = (float)(arrowX + cos(leftAngle) * size);
+            verts[1].position.y = (float)(arrowY + sin(leftAngle) * size);
+            verts[1].color = arrowColor;
+
+            verts[2].position.x = (float)(arrowX + cos(rightAngle) * size);
+            verts[2].position.y = (float)(arrowY + sin(rightAngle) * size);
+            verts[2].color = arrowColor;
+
+            // Dessine un triangle plein
+            SDL_RenderGeometry(renderer, NULL, verts, 3, NULL, 0);
+        }
+        
+        if (!isOutsideScreen) {
+        
+            // Imprime la texture bien placée sur la cible sélectionnée avant la fonction
+            SDL_RenderCopy(renderer, actualTexture->texture, &srcRect, &destRect);
+            
+            // Si on dessine le frame autour de la texture
+            if (drawFrameRect) {
+            
+                // Pour le dessin du rectangle autour de la texture
+                SDL_Rect frameRect = {
+                    .x = destRect.x - 2,
+                    .y = destRect.y - 2,
+                    .w = destRect.w + 4,
+                    .h = destRect.h + 4
+                };
+                
+                // Dessiner un bord autour de la texture
+                SDL_SetRenderDrawColor(renderer, frameRectColor.r, frameRectColor.g, frameRectColor.b, frameRectColor.a);
+                SDL_RenderDrawRect(renderer, &frameRect);
+            }
+        }
+        
+        actualTexture = actualTexture->next;
     }
     
-    return EXIT_SUCCESS;
+    return errorValue;
 }
 
 
