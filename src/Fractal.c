@@ -334,7 +334,7 @@ int main(int argc, char *argv[]) {
     // Taille minimale de la fenêtre
     SDL_SetWindowMinimumSize(window, minWindowWidth, minWindowHeight);
     
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
     // Ce qui va contenir tout la texture de la fractale
     SDL_Texture *fractalTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, windowWidth, windowHeight);
