@@ -116,6 +116,7 @@ typedef struct FractalList {
     struct FractalList* prev;
     double zoom, logZoom, offsetX, offsetY;
     int width, height;
+    int max_iterations, actual_max;
 } FractalList;
 
 
@@ -139,7 +140,7 @@ void push_view(FractalView history[MAX_HISTORY], int* historyIndex, double zoom,
 bool pop_view(FractalView history[MAX_HISTORY], int* historyIndex, double *zoom, double *offsetX, double *offsetY);
 
 // Gestion création et suppression de texture de la liste
-FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY, int *number, int* length);
+FractalList* push_texture(FractalList** head, double zoom, double offsetX, double offsetY, int *number, int* length);
 FractalList* pop_texture(FractalList** head, FractalList* toRemove, int* length);
 
 // Dessine le texte passé en paramètre
@@ -162,7 +163,7 @@ int calculate_iterations(void* arg);
 #endif
 
 // Rendu des itérations en une image
-void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing);
+void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, bool antialiasing);
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
 int draw_all_textures(SDL_Renderer *renderer, int windowWidth, int windowHeight, double zoom, double offsetX, double offsetY, 
@@ -622,23 +623,29 @@ int main(int argc, char *argv[]) {
                         break;
                     case SDLK_r:
                         if (selectedImage != NULL) {
-                            FractalList* newSelectedImage = selectedImage;
+                        
+                            // Si mode sélection pas activé, l'active seulement
+                            if (selectTextureOn) {
                             
-                            // Prend par défaut l'image précédente, si pas dispo l'image suivante, et si aucune dispo alors NULL
-                            if (selectedImage->prev == NULL && selectedImage->next == NULL) {
-                                newSelectedImage = NULL;
-                            } else if (selectedImage->prev == NULL) {
-                                newSelectedImage = selectedImage->next;
-                            } else {
-                                newSelectedImage = selectedImage->prev;
+                                FractalList* newSelectedImage = selectedImage;
+                                
+                                // Prend par défaut l'image précédente, si pas dispo l'image suivante, et si aucune dispo alors NULL
+                                if (selectedImage->prev == NULL && selectedImage->next == NULL) {
+                                    newSelectedImage = NULL;
+                                } else if (selectedImage->prev == NULL) {
+                                    newSelectedImage = selectedImage->next;
+                                } else {
+                                    newSelectedImage = selectedImage->prev;
+                                }
+                                
+                                // Supprime la texture sélectionnée
+                                pop_texture(&fractalList, selectedImage, &fractalListLength);
+                                
+                                // Sélectionne l'image la plus proche disponible
+                                selectedImage = newSelectedImage;
                             }
                             
-                            // Supprime la texture sélectionnée
-                            pop_texture(&fractalList, selectedImage, &fractalListLength);
-                            
-                            // Sélectionne l'image la plus proche disponible
-                            selectedImage = newSelectedImage;
-                            
+                            selectTextureOn = true;
                             redrawInterface = true;
                         }
                         break;
@@ -909,19 +916,19 @@ int main(int argc, char *argv[]) {
             SDL_SetRenderTarget(renderer, fractalTexture);
             
             // Lance la ransformation de la liste d'itérations en couleurs
-            render_iterations(renderer, task.iterationMap, task.width, task.height, palette, max_iteration, actual_max, activateAntialiasing);
+            render_iterations(renderer, task.iterationMap, task.width, task.height, palette, task.max_iteration, activateAntialiasing);
             
             // Si on fait le rendu après le calcul des itérations
             if (newIterationsCalculated) {
 
                 // Pousse la nouvelle texture dans la liste
-                newFractalElement = push_texture(&fractalList, log10(zoom), lastZoom, lastOffsetX, lastOffsetY, NULL, &fractalListLength);
+                newFractalElement = push_texture(&fractalList, lastZoom, lastOffsetX, lastOffsetY, NULL, &fractalListLength);
                 // Si aucune image sélectionnée, on sélectionne celle qui vient d'être créée
                 selectedImage = newFractalElement;
 
                 newFractalElement->width = task.width;
                 newFractalElement->height = task.height;
-                
+                newFractalElement->max_iterations = task.max_iteration;
                 
                 // On donne en plus de la texture la carte des itération si besoin de recommencer le rendu
                 newFractalElement->iterationMap = malloc(newFractalElement->width * task.height * sizeof(int));
@@ -983,9 +990,9 @@ int main(int argc, char *argv[]) {
                 
                 // Sélectionne la texture comme cible SDL
                 SDL_SetRenderTarget(renderer, actualFractalList->texture);
-                
+
                 // Fait le rendu sur la texture
-                render_iterations(renderer, actualFractalList->iterationMap, actualFractalList->width, actualFractalList->height, palette, max_iteration, actual_max, activateAntialiasing);
+                render_iterations(renderer, actualFractalList->iterationMap, actualFractalList->width, actualFractalList->height, palette, actualFractalList->max_iterations, activateAntialiasing);
                 
 
                 // Sélectionne l'écran comme cible SDL
@@ -1136,7 +1143,7 @@ int main(int argc, char *argv[]) {
 
             // Paramètres de l'image, bord bas gauche
             sprintf(displayBuffer, "Nombre d'itérations max: %d", max_iteration);
-            
+            render_text(renderer, font, displayBuffer, 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_LEFT);
             
             // Pour l'affichage normal ou scientifique des valeurs
             char zoomBuffer[64], offsetXBuffer[64], offsetYBuffer[64];
@@ -1420,7 +1427,7 @@ bool pop_view(FractalView history[MAX_HISTORY], int* historyIndex, double *zoom,
 
 
 // Ajouter une texture dans la liste, en fonction de son zoom
-FractalList* push_texture(FractalList** head, double logZoom, double zoom, double offsetX, double offsetY, int *number, int* length) {
+FractalList* push_texture(FractalList** head, double zoom, double offsetX, double offsetY, int *number, int* length) {
     FractalList* new_node = (FractalList*)malloc(sizeof(FractalList));
     if (!new_node) {
         SDL_Log("Erreur d'allocation mémoire pour la liste des textures de fractales.");
@@ -1434,11 +1441,11 @@ FractalList* push_texture(FractalList** head, double logZoom, double zoom, doubl
     new_node->texture = NULL;
     new_node->iterationMap = NULL;
     new_node->zoom = zoom;
-    new_node->logZoom = logZoom;
     new_node->offsetX = offsetX;
     new_node->offsetY = offsetY;
     new_node->width = 0;
     new_node->height = 0;
+    new_node->max_iterations = 0;
     new_node->next = NULL;
     new_node->prev = NULL;
 
@@ -1619,7 +1626,6 @@ void format_float_auto(char* buffer, size_t size, double value) {
 }
 
 
-
 // transforme les coordonnée de l'écran en coordonnée de fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy) {
     *fx = (x - width / 2) / zoom + offsetX;
@@ -1789,7 +1795,7 @@ int calculate_iterations(void* arg) {
 
 
 // Fait le rendu en couleurs des itérations sur la cible SDL
-void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, int actual_max, bool antialiasing) {
+void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, bool antialiasing) {
 
     for (int py = 0; py < h; py++) {
         for (int px = 0; px < w; px++) {
@@ -1824,13 +1830,19 @@ void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, 
             }
 
             // On va sélectionner la couleur de chaque pixel depuis la palette pré-générée
-            if (iteration == max_iteration) {
+            if (iteration >= max_iteration) {
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             } else {
-                int colorIndex = (iteration * (PALETTE_SIZE - 1)) / actual_max;
+                int colorIndex = (iteration * (PALETTE_SIZE - 1)) / max_iteration;
+
+                // Clamp pour éviter les segfaults
+                if (colorIndex < 0) colorIndex = 0;
+                if (colorIndex >= PALETTE_SIZE) colorIndex = PALETTE_SIZE - 1;
+
                 SDL_Color color = palette[colorIndex];
                 SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
             }
+            
             SDL_RenderDrawPoint(renderer, px, py);
         }
     }
