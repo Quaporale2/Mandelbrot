@@ -1,6 +1,6 @@
 
 # Nom des exécutables
-VERSION = v1.22
+VERSION = v1.23
 LINUX_OUTPUT = build/Fractal-linux-x86_64-$(VERSION)
 WIN_OUTPUT = build/Fractal-win64-$(VERSION).exe
 

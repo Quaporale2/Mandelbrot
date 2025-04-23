@@ -57,20 +57,36 @@ typedef struct {
 } FractalView;
 
 
+// Les différents types de fractales
+typedef enum {
+    FRACTAL_MANDELBROT,
+    FRACTAL_JULIA,
+    FRACTAL_BURNING_SHIP,
+    FRACTAL_TRICORN,
+    FRACTAL_MULTIBROT
+} FractalType;
+
 // Pour la séparation en un deuxième thread lors du calcul
 typedef struct {
     int *iterationMap;
     int *iterationMapBis;
     int max_iteration;
-    int *actual_max;
     double zoom, offsetX, offsetY;
     int width, height;
     bool antialiasing;
 
     int *progress;  // De 0 à 100
-    bool *finished;
+    bool *finished;  // Retour du thread pour indiquer qu'il a terminé
     
-    bool shouldStop;
+    bool shouldStop;  // Pour signaler au thread qu'il doit s'arrêter
+    
+    #ifdef __linux__
+    bool highPrecision;  // Précise si on utilise les fonction haute précision ou non
+    #endif
+    
+    FractalType fractalType;  // Type de fractale
+    double julia_c_re, julia_c_im; // Pour Julia
+    int multibrot_power;           // Pour Multibrot
 } FractalTask;
 
 
@@ -108,6 +124,9 @@ typedef enum {
 
 
 
+
+
+
 // Chaine de pointeurs pour la liste de textures
 typedef struct FractalList {
     SDL_Texture* texture;
@@ -116,7 +135,7 @@ typedef struct FractalList {
     struct FractalList* prev;
     double zoom, logZoom, offsetX, offsetY;
     int width, height;
-    int max_iterations, actual_max;
+    int max_iterations;
 } FractalList;
 
 
@@ -147,19 +166,35 @@ FractalList* pop_texture(FractalList** head, FractalList* toRemove, int* length)
 void render_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, OriginType origin);
 // Dessine une barre de progression ainsi qu'un texte
 void draw_loading_bar(SDL_Renderer* renderer, TTF_Font* font, char* text, int progress, int width, int height);
+
 // Affiche un double de facon normale ou scientifique en fonction de sa taille
 void format_float_auto(char* buffer, size_t size, double value);
+// Affichage dynamique en fonction du zoom
+void format_float_zoom_adaptive(char* buffer, size_t buffer_size, double value, double zoom);
 
 // Calcul des positions sur l'écran par rapport au positions dans la fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy);
 // Renvoie la valeur passée, limitée au minimum et au maximum passé
 double clamp_double(double val, double min, double max);
 
-// Calcul de l'image du Mandelbrot
+// Calcul de l'image du Mandelbrot en fonction des paramètres
 int calculate_iterations(void* arg);
+
+// Calcul de l'image du mandelbrot pour les différents types de fractales
+void calculate_iterations_mandelbrot(FractalTask* task);
+void calculate_iterations_julia(FractalTask* task);
+void calculate_iterations_burning_ship(FractalTask* task);
+void calculate_iterations_tricorn(FractalTask* task);
+void calculate_iterations_multibrot(FractalTask* task);
+void calculate_iterations_mandelbrot(FractalTask* task);
+// Calcul de mandelbrot utilisant les bibliothèques mpfr et gmp pour une précision théoriquement infinie
 #ifdef __linux__
-    // Calcul de mandelbrot utilisant les bibliothèques mpfr et gmp pour une précision théoriquement infinie
-    int calculate_iterations_high_precision(void* arg);
+void calculate_iterations_mandelbrot_mpfr(FractalTask* task);
+void calculate_iterations_julia_mpfr(FractalTask* task);
+void calculate_iterations_burning_ship_mpfr(FractalTask* task);
+void calculate_iterations_tricorn_mpfr(FractalTask* task);
+void calculate_iterations_multibrot_mpfr(FractalTask* task);
+void calculate_iterations_mandelbrot_mpfr(FractalTask* task);
 #endif
 
 // Rendu des itérations en une image
@@ -168,6 +203,7 @@ void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
 int draw_all_textures(SDL_Renderer *renderer, int windowWidth, int windowHeight, double zoom, double offsetX, double offsetY, 
                       FractalList* texturesList, FractalList* selectedTexture, bool selectTextureOn);
+
 
 
 
@@ -191,7 +227,7 @@ int main(int argc, char *argv[]) {
     // Définit si le calcul du mandelbrot sera précis ou normal
     // Seulement dans la version linux
     #ifdef __linux__
-        bool advancedMode = false;
+    bool advancedMode = false;
     #endif
     
     // Donne le nombre d'itérations jusqu'a lequel on va a chaque calcul de pixel du mandelbrot
@@ -280,8 +316,6 @@ int main(int argc, char *argv[]) {
     bool newIterationsCalculated = false;
     
     
-    // Le nombre d'itérations max trouvée lors du dernier calcul
-    int actual_max = 0;
     // Progrès actuel du calcul en pourcentage
     int progress = 0;
     // Dernier progrès, pour actualisation de l'affichage
@@ -305,7 +339,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     task.max_iteration = 0;
-    task.actual_max = &actual_max;
     task.zoom = 0;
     task.offsetX = 0;
     task.offsetY = 0;
@@ -315,6 +348,13 @@ int main(int argc, char *argv[]) {
     task.progress = &progress;
     task.finished = &finished;
     task.shouldStop = false;
+    #ifdef __linux__
+    task.highPrecision = false;
+    #endif
+    task.fractalType = 0;
+    task.julia_c_re = 0;
+    task.julia_c_im = 0;
+    task.multibrot_power = 0;
 
     // le pointeur vers le thread de calcul en cours
     SDL_Thread* currentCalcThread = NULL;
@@ -339,6 +379,12 @@ int main(int argc, char *argv[]) {
     FractalView history[MAX_HISTORY];
     int historyIndex = -1;
     
+    
+    // Définit le type de fractale, ainsi que les paramètres des types spéciaux
+    FractalType fractalType = FRACTAL_MANDELBROT;
+    double julia_c_re = -0.7, julia_c_im = 0.27015; // Pour Julia
+    int multibrot_power = 3;                        // Pour Multibrot
+
     
     // Initialise la police d'écriture
     TTF_Init();
@@ -590,6 +636,27 @@ int main(int argc, char *argv[]) {
                         redrawInterface = true;
                         renderAllIterations = true;
                         renderIteration = true;
+                        break;
+                    case SDLK_k:
+                        // Touche K pour parcourir les couleurs de palettes
+                        switch (fractalType) {
+                            case FRACTAL_MANDELBROT:
+                                fractalType = FRACTAL_JULIA;
+                                break;
+                            case FRACTAL_JULIA:
+                                fractalType = FRACTAL_BURNING_SHIP;
+                                break;
+                            case FRACTAL_BURNING_SHIP:
+                                fractalType = FRACTAL_TRICORN;
+                                break;
+                            case FRACTAL_TRICORN:
+                                fractalType = FRACTAL_MULTIBROT;
+                                break;
+                            case FRACTAL_MULTIBROT:
+                                fractalType = FRACTAL_MANDELBROT;
+                                break;
+                        }
+                        redrawInterface = true;
                         break;
                     // Touche T pour sélectionner la texture précédente
                     case SDLK_t:
@@ -1090,17 +1157,17 @@ int main(int argc, char *argv[]) {
             task.height = windowHeight;
             task.antialiasing = activateAntialiasing;
             task.shouldStop = false;
-
-            // Donner le choix entre mode normal et précis pour linux, et appeller la bonne fonction
             #ifdef __linux__
-                if (advancedMode) {
-                    currentCalcThread = SDL_CreateThread(calculate_iterations_high_precision, "CalcFractalThread", &task);
-                } else {
-                    currentCalcThread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
-                }
-            #else
-                currentCalcThread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+            task.highPrecision = advancedMode;
             #endif
+            task.fractalType = fractalType;
+            task.julia_c_re = julia_c_re;
+            task.julia_c_im = julia_c_im;
+            task.multibrot_power = multibrot_power;
+
+            
+            // Lance le second thread de calcul
+            currentCalcThread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
             
 
             // On déclare que le calcul est en cours
@@ -1141,63 +1208,89 @@ int main(int argc, char *argv[]) {
             // Calculer l'espacement vertical proportionnel à la hauteur de la fenêtre
             float verticalSpacing = 15 + windowWidth * 0.01f; // Par exemple, 3% de la hauteur de la fenêtre
 
+            /* Coté bas gauche de l'écran */
+
             // Paramètres de l'image, bord bas gauche
-            sprintf(displayBuffer, "Nombre d'itérations max: %d", max_iteration);
+            sprintf(displayBuffer, "Nombre d'images actuel: %d", fractalListLength);
             render_text(renderer, font, displayBuffer, 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_LEFT);
+            sprintf(displayBuffer, "Nombre d'itérations max: %d", max_iteration);
+            render_text(renderer, font, displayBuffer, 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_LEFT);
             
             // Pour l'affichage normal ou scientifique des valeurs
             char zoomBuffer[64], offsetXBuffer[64], offsetYBuffer[64];
 
             format_float_auto(zoomBuffer, sizeof(zoomBuffer), zoom);
-            format_float_auto(offsetXBuffer, sizeof(offsetXBuffer), offsetX);
-            format_float_auto(offsetYBuffer, sizeof(offsetYBuffer), offsetY);
+            format_float_zoom_adaptive(offsetXBuffer, sizeof(offsetXBuffer), offsetX, zoom);
+            format_float_zoom_adaptive(offsetYBuffer, sizeof(offsetYBuffer), offsetY, zoom);
 
             snprintf(displayBuffer, sizeof(displayBuffer), "Zoom actuel: %s", zoomBuffer);
-            render_text(renderer, font, displayBuffer, 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_LEFT);
-
-            snprintf(displayBuffer, sizeof(displayBuffer), "Offset actuel: X: %s   Y: %s", offsetXBuffer, offsetYBuffer);
             render_text(renderer, font, displayBuffer, 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_LEFT);
 
+            snprintf(displayBuffer, sizeof(displayBuffer), "Offset horizontal: %s", offsetXBuffer);
+            render_text(renderer, font, displayBuffer, 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_LEFT);
+            
+            snprintf(displayBuffer, sizeof(displayBuffer), "Offset vertical: %s", offsetYBuffer);
+            render_text(renderer, font, displayBuffer, 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_LEFT);
+
+            switch (fractalType) {
+                case FRACTAL_MANDELBROT:
+                    render_text(renderer, font, "Type de fractale: MANDELBROT", 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_LEFT);
+                    break;
+                case FRACTAL_JULIA:
+                    render_text(renderer, font, "Type de fractale: JULIA", 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_LEFT);
+                    break;
+                case FRACTAL_BURNING_SHIP:
+                    render_text(renderer, font, "Type de fractale: BURNING SHIP", 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_LEFT);
+                    break;
+                case FRACTAL_TRICORN:
+                    render_text(renderer, font, "Type de fractale: TRICORN", 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_LEFT);
+                    break;
+                case FRACTAL_MULTIBROT:
+                    render_text(renderer, font, "Type de fractale: MULTIBROT", 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_LEFT);
+                    break;
+            }
+            
+            
+            /* Coté bas droite de l'écran */
 
             // Controles, bord bas droite
             if (activateAntialiasing) {
-                render_text(renderer, font, "J pour toggle l'antialiasing:  ON", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "J: Antialiasing - ON", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
             } else {
-                render_text(renderer, font, "J pour toggle l'antialiasing: OFF", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "J: Antialiasing - OFF", windowWidth - 10, windowHeight - 1 * verticalSpacing, ORIGIN_UP_RIGHT);
             }
             
             if (selectTextureOn) {
-                render_text(renderer, font, "L pour toggle les frames autour des textures:  ON", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "L: Mode sélection - ON", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
             } else {
-                render_text(renderer, font, "L pour toggle les frames autour des textures: OFF", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
+                render_text(renderer, font, "L: Mode sélection - OFF", windowWidth - 10, windowHeight - 2 * verticalSpacing, ORIGIN_UP_RIGHT);
             }
 
             switch (colorScheme) {
                 case HOT_COLD:
-                    render_text(renderer, font, "B pour alterner les couleurs: CHAUD/FROID", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "B: Couleur - CHAUD/FROID", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
                 case WHITE_BLACK:
-                    render_text(renderer, font, "B pour alterner les couleurs:  BLANC/NOIR", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "B: Couleur - BLANC/NOIR", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
                 case RAINBOW:
-                    render_text(renderer, font, "B pour alterner les couleurs: ARC-EN-CIEL", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "B: Couleur - ARC-EN-CIEL", windowWidth - 10, windowHeight - 3 * verticalSpacing, ORIGIN_UP_RIGHT);
                     break;
             }
             
-            render_text(renderer, font, "Clic droit/flèches directionnelles pour déplacer", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Molette/clic gauche glissé/+&- pour zoomer/dézoomer", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Espace/Clic molette pour recalculer l'image du Mandelbrot", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "Clic droit simple pour retour en arrière", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "H pour toggle l'interface", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Clic droit/flèches directionnelles: Déplacer", windowWidth - 10, windowHeight - 4 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Molette/clic gauche glissé/+&-: Zoomer/Dézoomer", windowWidth - 10, windowHeight - 5 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "Espace/Clic molette: Calculer image", windowWidth - 10, windowHeight - 6 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "H: Interface | Clic droit simple: Retour arrière", windowWidth - 10, windowHeight - 7 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "T/Y: Sélectionner texture | R: Supprimer texture", windowWidth - 10, windowHeight - 8 * verticalSpacing, ORIGIN_UP_RIGHT);
             render_text(renderer, font, "W: Zoom  X: OffsetX  C: OffsetY  I: Itération max", windowWidth - 10, windowHeight - 9 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "T/Y pour sélectionner la texture", windowWidth - 10, windowHeight - 10 * verticalSpacing, ORIGIN_UP_RIGHT);
-            render_text(renderer, font, "R pour supprimer la texture sélectionnée", windowWidth - 10, windowHeight - 11 * verticalSpacing, ORIGIN_UP_RIGHT);
+            render_text(renderer, font, "K: Type Fractale | P: Paramètres Fractale", windowWidth - 10, windowHeight - 10 * verticalSpacing, ORIGIN_UP_RIGHT);
 
             #ifdef __linux__
                 if (advancedMode) {
-                    render_text(renderer, font, "M pour toggle précision Normale/Haute:   HAUTE", windowWidth - 10, windowHeight - 12 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "M: Précision Normale/Haute:   HAUTE", windowWidth - 10, windowHeight - 11 * verticalSpacing, ORIGIN_UP_RIGHT);
                 } else {
-                    render_text(renderer, font, "M pour toggle précision Normale/Haute: NORMALE", windowWidth - 10, windowHeight - 12 * verticalSpacing, ORIGIN_UP_RIGHT);
+                    render_text(renderer, font, "M: Précision Normale/Haute: NORMALE", windowWidth - 10, windowHeight - 11 * verticalSpacing, ORIGIN_UP_RIGHT);
                 }
             #endif
 
@@ -1224,6 +1317,8 @@ int main(int argc, char *argv[]) {
             SDL_SetRenderTarget(renderer, NULL);
         
             draw_loading_bar(renderer, font, "Chargement en cours...", progress, windowWidth, windowHeight);
+            
+            render_text(renderer, font, "Echap pour Annuler", windowWidth / 50, windowHeight / 50, ORIGIN_UP_LEFT);
 
             redrawLoading = false;
             drawingMade = true;
@@ -1247,6 +1342,8 @@ int main(int argc, char *argv[]) {
             // Sélectionne l'écran comme cible
             SDL_SetRenderTarget(renderer, NULL);
 
+            render_text(renderer, font, "Echap pour Annuler", windowWidth / 50, windowHeight / 50, ORIGIN_UP_LEFT);
+
             switch (menuMode) {
                 case max_iteration_menu:
                     sprintf(displayBuffer, "Veuillez entrer le nombre maximal d'itérations: %s", inputBuffer);
@@ -1264,7 +1361,7 @@ int main(int argc, char *argv[]) {
                     displayBuffer[0] = '\0';
                     break;
             }
-            render_text(renderer, font, displayBuffer, 10, 10, ORIGIN_UP_LEFT);
+            render_text(renderer, font, displayBuffer,  windowWidth / 50, (windowHeight / 50) + 15 + windowWidth * 0.01f, ORIGIN_UP_LEFT);
             
             inputStringModified = false;
             
@@ -1626,6 +1723,25 @@ void format_float_auto(char* buffer, size_t size, double value) {
 }
 
 
+// Affichage dynamique en fonction du zoom
+void format_float_zoom_adaptive(char* buffer, size_t buffer_size, double value, double zoom) {
+    int decimals;
+
+    // Idée simple : plus le zoom est grand, plus on affiche de décimales
+    if (zoom <= 1)
+        decimals = 2;
+    else
+        decimals = (int)(log10(zoom)) + 2;  // ex: zoom 100 → 4 décimales, zoom 1e6 → 8 décimales
+
+    if (decimals > 15) decimals = 15;  // sécurité
+    if (decimals < 2) decimals = 2;
+
+    char formatString[32];
+    snprintf(formatString, sizeof(formatString), "%%.%df", decimals);
+    snprintf(buffer, buffer_size, formatString, value);
+}
+
+
 // transforme les coordonnée de l'écran en coordonnée de fractale
 void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY, int width, int height, double *fx, double *fy) {
     *fx = (x - width / 2) / zoom + offsetX;
@@ -1639,53 +1755,75 @@ double clamp_double(double val, double min, double max) {
 }
 
 
-// Calcule le nombre d'itérations de chaque pixels
+// Calcul de l'image du Mandelbrot en fonction des paramètres
 int calculate_iterations(void* arg) {
+
     FractalTask* task = (FractalTask*)arg;
-
-    int w = task->width;
-    int h = task->height;
-    int total = w * h;
-    int done = 0;
-
-    *task->actual_max = 0;
 
     *task->finished = false;
     *task->progress = 0;
 
-    for (int py = 0; py < h; py++) {
-        for (int px = 0; px < w; px++) {
-            double x0 = (px - w / 2.0) / task->zoom + task->offsetX;
-            double y0 = (py - h / 2.0) / task->zoom + task->offsetY;
 
-            double x = 0.0, y = 0.0;
-            int iteration = 0;
-
-            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
-                double xtemp = x * x - y * y + x0;
-                y = 2.0 * x * y + y0;
-                x = xtemp;
-                iteration++;
-            }
-
-            task->iterationMapBis[py * w + px] = iteration;
-            if (iteration > *task->actual_max)
-                *task->actual_max = iteration;
-
-            done++;
+    #ifdef __linux__
+    // On appèlle la bonne fonction en fonction du type de fractale
+    if (task->highPrecision) {
+        switch (task->fractalType) {
+            case FRACTAL_MANDELBROT:
+                calculate_iterations_mandelbrot_mpfr(task);
+                break;
+            case FRACTAL_JULIA:
+                calculate_iterations_julia_mpfr(task);
+                break;
+            case FRACTAL_BURNING_SHIP:
+                calculate_iterations_burning_ship_mpfr(task);
+                break;
+            case FRACTAL_TRICORN:
+                calculate_iterations_tricorn_mpfr(task);
+                break;
+            case FRACTAL_MULTIBROT:
+                calculate_iterations_multibrot_mpfr(task);
+                break;
         }
-        
-        // On vérifie si on demande de sortir ou non
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            return EXIT_SUCCESS;
+    } else {
+        switch (task->fractalType) {
+            case FRACTAL_MANDELBROT:
+                calculate_iterations_mandelbrot(task);
+                break;
+            case FRACTAL_JULIA:
+                calculate_iterations_julia(task);
+                break;
+            case FRACTAL_BURNING_SHIP:
+                calculate_iterations_burning_ship(task);
+                break;
+            case FRACTAL_TRICORN:
+                calculate_iterations_tricorn(task);
+                break;
+            case FRACTAL_MULTIBROT:
+                calculate_iterations_multibrot(task);
+                break;
         }
-        
-        // Mettre à jour la progression une fois par ligne
-        *task->progress = (done * 100) / total;
     }
-    
+    #else
+    // On appèlle la bonne fonction en fonction du type de fractale
+    switch (task->fractalType) {
+        case FRACTAL_MANDELBROT:
+            calculate_iterations_mandelbrot(task);
+            break;
+        case FRACTAL_JULIA:
+            calculate_iterations_julia(task);
+            break;
+        case FRACTAL_BURNING_SHIP:
+            calculate_iterations_burning_ship(task);
+            break;
+        case FRACTAL_TRICORN:
+            calculate_iterations_tricorn(task);
+            break;
+        case FRACTAL_MULTIBROT:
+            calculate_iterations_multibrot(task);
+            break;
+    }
+    #endif
+
     // On inverse les deux listes seulement quand on est sur que l'écriture est complête
     int* iterationMapTemp = task->iterationMap;
     task->iterationMap = task->iterationMapBis;
@@ -1696,101 +1834,504 @@ int calculate_iterations(void* arg) {
 }
 
 
-// Calcule le nombre d'itérations de chaque pixels
+// Calcul d'une image pour le type de Fractale: Mandelbrot
+void calculate_iterations_mandelbrot(FractalTask* task) {
+    int done = 0;
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+        
+            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
+            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
+            double x = 0.0, y = 0.0;
+            int iteration = 0;
+
+            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                double xtemp = x * x - y * y + x0;
+                y = 2.0 * x * y + y0;
+                x = xtemp;
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+        
+        // On vérifie si on demande de sortir ou non
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            return;
+        }
+        
+        // Mettre à jour la progression une fois par ligne
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+}
+
+
+// Calcul d'une image pour le type de Fractale: Julia
+void calculate_iterations_julia(FractalTask* task) {
+    int done = 0;
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+
+            double x = (px - task->width / 2.0) / task->zoom + task->offsetX;
+            double y = (py - task->height / 2.0) / task->zoom + task->offsetY;
+            double cx = task->julia_c_re;
+            double cy = task->julia_c_im;
+            int iteration = 0;
+
+            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                double xtemp = x * x - y * y + cx;
+                y = 2.0 * x * y + cy;
+                x = xtemp;
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            return;
+        }
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+}
+
+
+// Calcul d'une image pour le type de Fractale: Burning Ship
+void calculate_iterations_burning_ship(FractalTask* task) {
+    int done = 0;
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+
+            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
+            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
+            double x = 0.0, y = 0.0;
+            int iteration = 0;
+
+            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                double xtemp = x * x - y * y + x0;
+                y = fabs(2.0 * x * y) + y0;
+                x = fabs(xtemp);
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            return;
+        }
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+}
+
+
+// Calcul d'une image pour le type de Fractale: Tricorn
+void calculate_iterations_tricorn(FractalTask* task) {
+    int done = 0;
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+
+            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
+            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
+            double x = 0.0, y = 0.0;
+            int iteration = 0;
+
+            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                double xtemp = x * x - y * y + x0;
+                y = -2.0 * x * y + y0;
+                x = xtemp;
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            return;
+        }
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+}
+
+
+// Calcul d'une image pour le type de Fractale: Multibrot
+void calculate_iterations_multibrot(FractalTask* task) {
+    int done = 0;
+    int power = task->multibrot_power;
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+
+            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
+            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
+            double x = 0.0, y = 0.0;
+            int iteration = 0;
+
+            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                double r = hypot(x, y);
+                double theta = atan2(y, x);
+                double r_pow = pow(r, power);
+                double new_x = r_pow * cos(power * theta) + x0;
+                double new_y = r_pow * sin(power * theta) + y0;
+                x = new_x;
+                y = new_y;
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            return;
+        }
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+}
+
+
 // Utilise une biliothèque permettant un zoom techniquement infini
 #ifdef __linux__
-    int calculate_iterations_high_precision(void* arg) {
-        FractalTask* task = (FractalTask*)arg;
 
-        int w = task->width;
-        int h = task->height;
-        int total = w * h;
-        int done = 0;
+void calculate_iterations_mandelbrot_mpfr(FractalTask* task) {
+    int done = 0;
+    mpfr_prec_t prec = 256; // Précision en bits, ajustez selon vos besoins
 
-        *task->actual_max = 0;
-        *task->finished = false;
-        *task->progress = 0;
+    mpfr_t x0, y0, x, y, xtemp, x_squared, y_squared, four;
+    mpfr_inits2(prec, x0, y0, x, y, xtemp, x_squared, y_squared, four, (mpfr_ptr) 0);
+    mpfr_set_d(four, 4.0, MPFR_RNDN);
 
-        mpfr_prec_t precision = 256;
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+            // x0 = (px - width / 2.0) / zoom + offsetX
+            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
+            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
 
-        // Variables MPFR
-        mpfr_t x0, y0, x, y, xtemp, xsqr, ysqr, sum;
-        mpfr_t two, four, offsetX, offsetY, inv_zoom, px_shifted, py_shifted;
+            // y0 = (py - height / 2.0) / zoom + offsetY
+            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
+            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
 
-        mpfr_inits2(precision, x0, y0, x, y, xtemp, xsqr, ysqr, sum, two, four,
-                    offsetX, offsetY, inv_zoom, px_shifted, py_shifted, (mpfr_ptr) 0);
+            mpfr_set_d(x, 0.0, MPFR_RNDN);
+            mpfr_set_d(y, 0.0, MPFR_RNDN);
+            int iteration = 0;
 
-        mpfr_set_d(two, 2.0, MPFR_RNDN);
-        mpfr_set_d(four, 4.0, MPFR_RNDN);
-        mpfr_set_d(offsetX, task->offsetX, MPFR_RNDN);
-        mpfr_set_d(offsetY, task->offsetY, MPFR_RNDN);
+            while (iteration < task->max_iteration) {
+                // x_squared = x * x
+                mpfr_mul(x_squared, x, x, MPFR_RNDN);
+                // y_squared = y * y
+                mpfr_mul(y_squared, y, y, MPFR_RNDN);
 
-        // Inverser zoom pour éviter de diviser à chaque pixel
-        mpfr_set_d(inv_zoom, 1.0 / task->zoom, MPFR_RNDN);
+                // x_squared + y_squared > 4.0 ?
+                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
+                if (mpfr_cmp(xtemp, four) > 0)
+                    break;
 
-        double half_w = w / 2.0;
-        double half_h = h / 2.0;
+                // xtemp = x_squared - y_squared + x0
+                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
+                mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);
 
-        for (int py = 0; py < h; py++) {
-            double y_base = py - half_h;
-            mpfr_set_d(py_shifted, y_base, MPFR_RNDN);
-            mpfr_mul(y0, py_shifted, inv_zoom, MPFR_RNDN);
-            mpfr_add(y0, y0, offsetY, MPFR_RNDN);
+                // y = 2 * x * y + y0
+                mpfr_mul(y, x, y, MPFR_RNDN);
+                mpfr_mul_d(y, y, 2.0, MPFR_RNDN);
+                mpfr_add(y, y, y0, MPFR_RNDN);
 
-            for (int px = 0; px < w; px++) {
-                double x_base = px - half_w;
-                mpfr_set_d(px_shifted, x_base, MPFR_RNDN);
-                mpfr_mul(x0, px_shifted, inv_zoom, MPFR_RNDN);
-                mpfr_add(x0, x0, offsetX, MPFR_RNDN);
+                // x = xtemp
+                mpfr_set(x, xtemp, MPFR_RNDN);
 
-                mpfr_set_d(x, 0.0, MPFR_RNDN);
-                mpfr_set_d(y, 0.0, MPFR_RNDN);
-
-                int iteration = 0;
-
-                while (iteration < task->max_iteration) {
-                    mpfr_sqr(xsqr, x, MPFR_RNDN);    // xsqr = x^2
-                    mpfr_sqr(ysqr, y, MPFR_RNDN);    // ysqr = y^2
-                    mpfr_add(sum, xsqr, ysqr, MPFR_RNDN);
-
-                    if (mpfr_cmp(sum, four) > 0) break;
-
-                    mpfr_sub(xtemp, xsqr, ysqr, MPFR_RNDN);   // xtemp = x^2 - y^2
-                    mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);    // xtemp += x0
-
-                    mpfr_mul(y, x, y, MPFR_RNDN);
-                    mpfr_mul(y, y, two, MPFR_RNDN);
-                    mpfr_add(y, y, y0, MPFR_RNDN);
-
-                    mpfr_set(x, xtemp, MPFR_RNDN);
-
-                    iteration++;
-                }
-
-                task->iterationMap[py * w + px] = iteration;
-                if (iteration > *task->actual_max)
-                    *task->actual_max = iteration;
-
-                done++;
-            }
-            
-            // On vérifie si on demande de sortir ou non
-            if (task->shouldStop) {
-                *task->progress = 100;
-                *task->finished = true;
-                return EXIT_SUCCESS;
+                iteration++;
             }
 
-            *task->progress = (done * 100) / total;
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
         }
 
-        mpfr_clears(x0, y0, x, y, xtemp, xsqr, ysqr, sum,
-                    two, four, offsetX, offsetY, inv_zoom,
-                    px_shifted, py_shifted, (mpfr_ptr) 0);
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, four, (mpfr_ptr) 0);
+            return;
+        }
 
-        *task->finished = true;
-        return 0;
+        *task->progress = (done * 100) / (task->width * task->height);
     }
+
+    mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, four, (mpfr_ptr) 0);
+}
+
+
+void calculate_iterations_julia_mpfr(FractalTask* task) {
+    int done = 0;
+    mpfr_prec_t prec = 256;
+
+    mpfr_t x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four;
+    mpfr_inits2(prec, x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four, (mpfr_ptr) 0);
+    mpfr_set_d(four, 4.0, MPFR_RNDN);
+    mpfr_set_d(cx, task->julia_c_re, MPFR_RNDN);
+    mpfr_set_d(cy, task->julia_c_im, MPFR_RNDN);
+
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+            // Coordonnées initiales
+            mpfr_set_d(x, px - task->width / 2.0, MPFR_RNDN);
+            mpfr_div_d(x, x, task->zoom, MPFR_RNDN);
+            mpfr_add_d(x, x, task->offsetX, MPFR_RNDN);
+
+            mpfr_set_d(y, py - task->height / 2.0, MPFR_RNDN);
+            mpfr_div_d(y, y, task->zoom, MPFR_RNDN);
+            mpfr_add_d(y, y, task->offsetY, MPFR_RNDN);
+
+            int iteration = 0;
+            while (iteration < task->max_iteration) {
+                mpfr_mul(x_squared, x, x, MPFR_RNDN);
+                mpfr_mul(y_squared, y, y, MPFR_RNDN);
+                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
+                if (mpfr_cmp(xtemp, four) > 0)
+                    break;
+
+                // xtemp = x² - y² + cx
+                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
+                mpfr_add(xtemp, xtemp, cx, MPFR_RNDN);
+
+                // y = 2xy + cy
+                mpfr_mul(two_xy, x, y, MPFR_RNDN);
+                mpfr_mul_d(two_xy, two_xy, 2.0, MPFR_RNDN);
+                mpfr_add(y, two_xy, cy, MPFR_RNDN);
+
+                // x = xtemp
+                mpfr_set(x, xtemp, MPFR_RNDN);
+
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            mpfr_clears(x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four, (mpfr_ptr) 0);
+            return;
+        }
+
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+
+    mpfr_clears(x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four, (mpfr_ptr) 0);
+}
+
+
+void calculate_iterations_burning_ship_mpfr(FractalTask* task) {
+    int done = 0;
+    mpfr_prec_t prec = 256;
+
+    mpfr_t x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four;
+    mpfr_inits2(prec, x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
+    mpfr_set_d(four, 4.0, MPFR_RNDN);
+
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+            // x0
+            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
+            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
+
+            // y0
+            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
+            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
+
+            mpfr_set_d(x, 0.0, MPFR_RNDN);
+            mpfr_set_d(y, 0.0, MPFR_RNDN);
+            int iteration = 0;
+
+            while (iteration < task->max_iteration) {
+                // x², y²
+                mpfr_mul(x_squared, x, x, MPFR_RNDN);
+                mpfr_mul(y_squared, y, y, MPFR_RNDN);
+                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
+                if (mpfr_cmp(xtemp, four) > 0)
+                    break;
+
+                // xtemp = |x² - y² + x0|
+                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
+                mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);
+                mpfr_abs(x, xtemp, MPFR_RNDN);
+
+                // y = |2xy + y0|
+                mpfr_mul(two_xy, x, y, MPFR_RNDN);
+                mpfr_mul_d(two_xy, two_xy, 2.0, MPFR_RNDN);
+                mpfr_add(y, two_xy, y0, MPFR_RNDN);
+                mpfr_abs(y, y, MPFR_RNDN);
+
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
+            return;
+        }
+
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+
+    mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
+}
+
+
+
+void calculate_iterations_tricorn_mpfr(FractalTask* task) {
+    int done = 0;
+    mpfr_prec_t prec = 256;
+
+    mpfr_t x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four;
+    mpfr_inits2(prec, x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
+    mpfr_set_d(four, 4.0, MPFR_RNDN);
+
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+            // Position dans le plan complexe
+            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
+            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
+
+            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
+            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
+
+            mpfr_set_d(x, 0.0, MPFR_RNDN);
+            mpfr_set_d(y, 0.0, MPFR_RNDN);
+            int iteration = 0;
+
+            while (iteration < task->max_iteration) {
+                mpfr_mul(x_squared, x, x, MPFR_RNDN);
+                mpfr_mul(y_squared, y, y, MPFR_RNDN);
+                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
+                if (mpfr_cmp(xtemp, four) > 0)
+                    break;
+
+                // xtemp = x² - y² + x0
+                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
+                mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);
+
+                // y = -2xy + y0
+                mpfr_mul(two_xy, x, y, MPFR_RNDN);
+                mpfr_mul_d(two_xy, two_xy, -2.0, MPFR_RNDN);
+                mpfr_add(y, two_xy, y0, MPFR_RNDN);
+
+                mpfr_set(x, xtemp, MPFR_RNDN);
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
+            return;
+        }
+
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+
+    mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
+}
+
+
+void calculate_iterations_multibrot_mpfr(FractalTask* task) {
+    int done = 0;
+    int power = task->multibrot_power;
+    mpfr_prec_t prec = 256;
+
+    mpfr_t x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four;
+    mpfr_inits2(prec, x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four, (mpfr_ptr) 0);
+    mpfr_set_d(four, 4.0, MPFR_RNDN);
+
+    for (int py = 0; py < task->height; py++) {
+        for (int px = 0; px < task->width; px++) {
+            // Coordonnées initiales
+            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
+            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
+
+            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
+            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
+            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
+
+            mpfr_set_d(x, 0.0, MPFR_RNDN);
+            mpfr_set_d(y, 0.0, MPFR_RNDN);
+            int iteration = 0;
+
+            while (iteration < task->max_iteration) {
+                // r = sqrt(x^2 + y^2)
+                mpfr_mul(x_squared, x, x, MPFR_RNDN);
+                mpfr_mul(y_squared, y, y, MPFR_RNDN);
+                mpfr_add(sum, x_squared, y_squared, MPFR_RNDN);
+                if (mpfr_cmp(sum, four) > 0)
+                    break;
+                mpfr_sqrt(r, sum, MPFR_RNDN);
+
+                // theta = atan2(y, x)
+                mpfr_atan2(theta, y, x, MPFR_RNDN);
+
+                // r^power
+                mpfr_pow_ui(r_pow, r, power, MPFR_RNDN);
+
+                // angle = power * theta
+                mpfr_mul_si(angle, theta, power, MPFR_RNDN);
+
+                // new_x = r^power * cos(angle) + x0
+                mpfr_cos(new_x, angle, MPFR_RNDN);
+                mpfr_mul(new_x, r_pow, new_x, MPFR_RNDN);
+                mpfr_add(new_x, new_x, x0, MPFR_RNDN);
+
+                // new_y = r^power * sin(angle) + y0
+                mpfr_sin(new_y, angle, MPFR_RNDN);
+                mpfr_mul(new_y, r_pow, new_y, MPFR_RNDN);
+                mpfr_add(new_y, new_y, y0, MPFR_RNDN);
+
+                mpfr_set(x, new_x, MPFR_RNDN);
+                mpfr_set(y, new_y, MPFR_RNDN);
+                iteration++;
+            }
+
+            task->iterationMapBis[py * task->width + px] = iteration;
+            done++;
+        }
+
+        if (task->shouldStop) {
+            *task->progress = 100;
+            *task->finished = true;
+            mpfr_clears(x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four, (mpfr_ptr) 0);
+            return;
+        }
+
+        *task->progress = (done * 100) / (task->width * task->height);
+    }
+
+    mpfr_clears(x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four, (mpfr_ptr) 0);
+}
+
 #endif
 
 
