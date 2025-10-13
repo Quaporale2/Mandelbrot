@@ -90,6 +90,17 @@ typedef struct {
 } FractalTask;
 
 
+// Type pour la gestion des threads lors du calcul des itérations
+typedef struct {
+    FractalTask* task;
+    SDL_Thread* thread;
+    SDL_atomic_t* totalProgress;
+    SDL_atomic_t isRunning;
+    int startLine;
+    int nbOfLines;
+} WorkerThread;
+
+
 // Pour mieux voir les différents types de menus
 enum menuTypes {
     no_menu = 0,
@@ -121,10 +132,6 @@ typedef enum {
     WHITE_BLACK = 2,
     RAINBOW = 3
 } ColorSchemes;
-
-
-
-
 
 
 // Chaine de pointeurs pour la liste de textures
@@ -178,15 +185,14 @@ void screen_to_fractal(int x, int y, double zoom, double offsetX, double offsetY
 double clamp_double(double val, double min, double max);
 
 // Calcul de l'image du Mandelbrot en fonction des paramètres
-int calculate_iterations(void* arg);
+int calculateIterations(void* arg);
 
 // Calcul de l'image du mandelbrot pour les différents types de fractales
-void calculate_iterations_mandelbrot(FractalTask* task);
 void calculate_iterations_julia(FractalTask* task);
 void calculate_iterations_burning_ship(FractalTask* task);
 void calculate_iterations_tricorn(FractalTask* task);
 void calculate_iterations_multibrot(FractalTask* task);
-void calculate_iterations_mandelbrot(FractalTask* task);
+int calculateIterationsLines(void* arg);
 // Calcul de mandelbrot utilisant les bibliothèques mpfr et gmp pour une précision théoriquement infinie
 #ifdef __linux__
 void calculate_iterations_mandelbrot_mpfr(FractalTask* task);
@@ -201,12 +207,11 @@ void calculate_iterations_mandelbrot_mpfr(FractalTask* task);
 void render_iterations(SDL_Renderer *renderer, int *iterationMap, int w, int h, SDL_Color *palette, int max_iteration, bool antialiasing);
 
 // Dessine la texture du Mandelbrot en prenant une partie d'une texture, et la collant sur une partie d'une autre texture
-int draw_all_textures(SDL_Renderer *renderer, int windowWidth, int windowHeight, double zoom, double offsetX, double offsetY, 
-                      FractalList* texturesList, FractalList* selectedTexture, bool selectTextureOn);
+int draw_all_textures(SDL_Renderer *renderer, int windowWidth, int windowHeight, double zoom, double offsetX, double offsetY, FractalList* texturesList, FractalList* selectedTexture, bool selectTextureOn);
 
 
-
-
+void calculate_iterations_mandelbrot(FractalTask* task);
+int calculate_iterations_mandelbrot_line(void* arg);
 
 
 int main(int argc, char *argv[]) {
@@ -460,11 +465,19 @@ int main(int argc, char *argv[]) {
                 initialClickDone = false;
                 redrawInterface = true;
             }
-            // Revient en arrière dans l'historique sur clic gauche
+            // Revient en arrière dans l'historique sur clic droit
             if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT && !rightDragging && initialClickDone && !menuMode) {
                 if (pop_view(history, &historyIndex, &zoom, &offsetX, &offsetY)) {
                     redrawInterface = true;
                 }
+            }
+            // Sélectionne la texture pointée sur clic gauche
+            if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_LEFT && !leftDragging && initialClickDone && !menuMode && selectTextureOn) {
+                
+                
+                
+                
+                
             }
             // Clic molette ou espace recalcule le mandelbrot
             if (((event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_MIDDLE) || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_SPACE)) && !menuMode && initialClickDone) {
@@ -490,9 +503,9 @@ int main(int argc, char *argv[]) {
 
                 // 4. Modifier le zoom
                 if (event.wheel.y > 0) {
-                    zoom *= 1.3;
+                    zoom *= 1.25;
                 } else if (event.wheel.y < 0) {
-                    zoom /= 1.3;
+                    zoom /= 1.25;
                 }
 
                 // 5. Position fractale APRÈS zoom
@@ -935,7 +948,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Si on est en attente du dessin de la fractale
+        // Si on est en attente du dessin de la fractale (calcul en cours)
         if (fractalCalcPending) {
         
             // Pas besoin de mettre à jour l'interface, juste le chargement
@@ -1167,7 +1180,7 @@ int main(int argc, char *argv[]) {
 
             
             // Lance le second thread de calcul
-            currentCalcThread = SDL_CreateThread(calculate_iterations, "CalcFractalThread", &task);
+            currentCalcThread = SDL_CreateThread(calculateIterations, "CalcFractalThread", &task);
             
 
             // On déclare que le calcul est en cours
@@ -1430,9 +1443,6 @@ TTF_Font* load_font_from_memory(int size) {
 
     return font;
 }
-
-
-
 
 
 // Génère une palette de couleur allant dans couleurs froides au couleurs chaudes
@@ -1755,218 +1765,228 @@ double clamp_double(double val, double min, double max) {
 }
 
 
-// Calcul de l'image du Mandelbrot en fonction des paramètres
-int calculate_iterations(void* arg) {
+// Gère les threads pour calculer les itérations
+int calculateIterations(void* arg) {
 
     FractalTask* task = (FractalTask*)arg;
 
+    // Réinitialise la progression
     *task->finished = false;
     *task->progress = 0;
 
-
-    #ifdef __linux__
-    // On appèlle la bonne fonction en fonction du type de fractale
-    if (task->highPrecision) {
-        switch (task->fractalType) {
-            case FRACTAL_MANDELBROT:
-                calculate_iterations_mandelbrot_mpfr(task);
-                break;
-            case FRACTAL_JULIA:
-                calculate_iterations_julia_mpfr(task);
-                break;
-            case FRACTAL_BURNING_SHIP:
-                calculate_iterations_burning_ship_mpfr(task);
-                break;
-            case FRACTAL_TRICORN:
-                calculate_iterations_tricorn_mpfr(task);
-                break;
-            case FRACTAL_MULTIBROT:
-                calculate_iterations_multibrot_mpfr(task);
-                break;
-        }
-    } else {
-        switch (task->fractalType) {
-            case FRACTAL_MANDELBROT:
-                calculate_iterations_mandelbrot(task);
-                break;
-            case FRACTAL_JULIA:
-                calculate_iterations_julia(task);
-                break;
-            case FRACTAL_BURNING_SHIP:
-                calculate_iterations_burning_ship(task);
-                break;
-            case FRACTAL_TRICORN:
-                calculate_iterations_tricorn(task);
-                break;
-            case FRACTAL_MULTIBROT:
-                calculate_iterations_multibrot(task);
-                break;
-        }
+    // Définis combien de lignes chaque thread calcule avant d'être terminé
+    int linesPerThread = 32;
+    // Pour le suivis de la progression sur tout les threads
+    SDL_atomic_t totalProgress;
+    SDL_AtomicSet(&totalProgress, 0);
+    
+    // Crée la liste de threads et l'initialise
+    int nbOfThreads = SDL_GetCPUCount();
+    WorkerThread threads[nbOfThreads];
+    for (int i = 0; i < nbOfThreads; i++) {
+        threads[i].task = task;
+        threads[i].thread = NULL;
+        threads[i].totalProgress = &totalProgress;
+        SDL_AtomicSet(&threads[i].isRunning, 0);
+        threads[i].startLine = 0;
+        threads[i].nbOfLines = linesPerThread;
     }
-    #else
-    // On appèlle la bonne fonction en fonction du type de fractale
-    switch (task->fractalType) {
-        case FRACTAL_MANDELBROT:
-            calculate_iterations_mandelbrot(task);
-            break;
-        case FRACTAL_JULIA:
-            calculate_iterations_julia(task);
-            break;
-        case FRACTAL_BURNING_SHIP:
-            calculate_iterations_burning_ship(task);
-            break;
-        case FRACTAL_TRICORN:
-            calculate_iterations_tricorn(task);
-            break;
-        case FRACTAL_MULTIBROT:
-            calculate_iterations_multibrot(task);
-            break;
+    
+    int currentLine = 0;
+    while (currentLine < task->height && !task->shouldStop) {
+        for (int i = 0; i < nbOfThreads; i++) {
+            // Eviter d'ajouter des threads si en dehors des limites
+            if (currentLine >= task->height && task->shouldStop) {
+                break;
+            }
+            if (!SDL_AtomicGet(&threads[i].isRunning)) {
+                SDL_AtomicSet(&threads[i].isRunning, 1);
+                threads[i].startLine = currentLine;
+                threads[i].thread = SDL_CreateThread(calculateIterationsLines, "CalcFractalThreadLine", (void*)&threads[i]);
+                currentLine += linesPerThread;
+            }
+        }
+        *task->progress = (SDL_AtomicGet(&totalProgress) * 100) / (task->height * task->width);
+        SDL_Delay(10);
     }
-    #endif
-
+    
+    // Attend la fin de tout les threads
+    for (int i = 0; i < nbOfThreads; i++) {
+        SDL_WaitThread(threads[i].thread, NULL);
+    }
+    
+    *task->finished = true;
+    
     // On inverse les deux listes seulement quand on est sur que l'écriture est complête
     int* iterationMapTemp = task->iterationMap;
     task->iterationMap = task->iterationMapBis;
     task->iterationMapBis = iterationMapTemp;
-
-    *task->finished = true;
-    return EXIT_SUCCESS;
+    
+    return 0;
 }
 
 
-// Calcul d'une image pour le type de Fractale: Mandelbrot
-void calculate_iterations_mandelbrot(FractalTask* task) {
+// Calcule les itérations des lignes données pour le type de fractale donnée
+int calculateIterationsLines(void* arg) {
+    WorkerThread* thread = (WorkerThread*)arg;
+    FractalTask* task = thread->task;
     int done = 0;
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-        
-            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
-            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
-            double x = 0.0, y = 0.0;
-            int iteration = 0;
+    double zoomInv = 1 / task->zoom;
+    
+    if (task->fractalType == FRACTAL_MANDELBROT) {
+        for (int py = thread->startLine; py < task->height && py < thread->startLine + thread->nbOfLines; py++) {
+            for (int px = 0; px < task->width; px++) {
+                double x0 = (px - task->width * 0.5) * zoomInv + task->offsetX;
+                double y0 = (py - task->height * 0.5) * zoomInv + task->offsetY;
+                double x = 0.0, y = 0.0, x2 = 0.0, y2 = 0.0;
+                int iteration = 0;
 
-            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
-                double xtemp = x * x - y * y + x0;
-                y = 2.0 * x * y + y0;
-                x = xtemp;
-                iteration++;
+                while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                    y = 2.0 * x * y + y0;
+                    x = x2 - y2 + x0;
+                    x2 = x * x;
+                    y2 = y * y;
+                    iteration++;
+                }
+                // Met à jour la progression
+                SDL_AtomicAdd(thread->totalProgress, 1);
+                // On vérifie à chaque pixel si on demande de sortir
+                if (task->shouldStop) {
+                    SDL_AtomicSet(&thread->isRunning, 0);
+                    return 1;
+                }
+                // Met à jour les données d'itérations
+                task->iterationMapBis[py * task->width + px] = iteration;
+                done++;
             }
+        }
+    } else if (task->fractalType == FRACTAL_JULIA) {
+        for (int py = thread->startLine; py < task->height && py < thread->startLine + thread->nbOfLines; py++) {
+            for (int px = 0; px < task->width; px++) {
+                double x = (px - task->width / 2.0) * zoomInv + task->offsetX;
+                double y = (py - task->height / 2.0) * zoomInv + task->offsetY;
+                double cx = task->julia_c_re;
+                double cy = task->julia_c_im;
+                int iteration = 0;
 
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
+                while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                    double xtemp = x * x - y * y + cx;
+                    y = 2.0 * x * y + cy;
+                    x = xtemp;
+                    iteration++;
+                }
+                // Met à jour la progression
+                SDL_AtomicAdd(thread->totalProgress, 1);
+                // On vérifie à chaque pixel si on demande de sortir
+                if (task->shouldStop) {
+                    SDL_AtomicSet(&thread->isRunning, 0);
+                    return 1;
+                }
+                // Met à jour les données d'itérations
+                task->iterationMapBis[py * task->width + px] = iteration;
+                done++;
+            }
         }
-        
-        // On vérifie si on demande de sortir ou non
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            return;
+    } if (task->fractalType == FRACTAL_BURNING_SHIP) {
+        for (int py = thread->startLine; py < task->height && py < thread->startLine + thread->nbOfLines; py++) {
+            for (int px = 0; px < task->width; px++) {
+
+                double x0 = (px - task->width / 2.0) * zoomInv + task->offsetX;
+                double y0 = (py - task->height / 2.0) * zoomInv + task->offsetY;
+                double x = 0.0, y = 0.0;
+                int iteration = 0;
+
+                while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                    double xtemp = x * x - y * y + x0;
+                    y = fabs(2.0 * x * y) + y0;
+                    x = fabs(xtemp);
+                    iteration++;
+                }
+                // Met à jour la progression
+                SDL_AtomicAdd(thread->totalProgress, 1);
+                // On vérifie à chaque pixel si on demande de sortir
+                if (task->shouldStop) {
+                    SDL_AtomicSet(&thread->isRunning, 0);
+                    return 1;
+                }
+                // Met à jour les données d'itérations
+                task->iterationMapBis[py * task->width + px] = iteration;
+                done++;
+            }
         }
-        
-        // Mettre à jour la progression une fois par ligne
-        *task->progress = (done * 100) / (task->width * task->height);
+    } if (task->fractalType == FRACTAL_TRICORN) {
+        for (int py = thread->startLine; py < task->height && py < thread->startLine + thread->nbOfLines; py++) {
+            for (int px = 0; px < task->width; px++) {
+
+                double x0 = (px - task->width / 2.0) * zoomInv + task->offsetX;
+                double y0 = (py - task->height / 2.0) * zoomInv + task->offsetY;
+                double x = 0.0, y = 0.0;
+                int iteration = 0;
+
+                while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                    double xtemp = x * x - y * y + x0;
+                    y = -2.0 * x * y + y0;
+                    x = xtemp;
+                    iteration++;
+                }
+                // Met à jour la progression
+                SDL_AtomicAdd(thread->totalProgress, 1);
+                // On vérifie à chaque pixel si on demande de sortir
+                if (task->shouldStop) {
+                    SDL_AtomicSet(&thread->isRunning, 0);
+                    return 1;
+                }
+                // Met à jour les données d'itérations
+                task->iterationMapBis[py * task->width + px] = iteration;
+                done++;
+            }
+        }
+    } if (task->fractalType == FRACTAL_MULTIBROT) {
+        for (int py = thread->startLine; py < task->height && py < thread->startLine + thread->nbOfLines; py++) {
+            for (int px = 0; px < task->width; px++) {
+
+                double x0 = (px - task->width / 2.0) * zoomInv + task->offsetX;
+                double y0 = (py - task->height / 2.0) * zoomInv + task->offsetY;
+                double x = 0.0, y = 0.0;
+                int iteration = 0;
+
+                while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
+                    double r = hypot(x, y);
+                    double theta = atan2(y, x);
+                    double r_pow = pow(r, task->multibrot_power);
+                    double new_x = r_pow * cos(task->multibrot_power * theta) + x0;
+                    double new_y = r_pow * sin(task->multibrot_power * theta) + y0;
+                    x = new_x;
+                    y = new_y;
+                    iteration++;
+                }
+                // Met à jour la progression
+                SDL_AtomicAdd(thread->totalProgress, 1);
+                // On vérifie à chaque pixel si on demande de sortir
+                if (task->shouldStop) {
+                    SDL_AtomicSet(&thread->isRunning, 0);
+                    return 1;
+                }
+                // Met à jour les données d'itérations
+                task->iterationMapBis[py * task->width + px] = iteration;
+                done++;
+            }
+        }
     }
+    
+    SDL_AtomicSet(&thread->isRunning, 0);
+    return 0;
 }
 
 
-// Calcul d'une image pour le type de Fractale: Julia
-void calculate_iterations_julia(FractalTask* task) {
-    int done = 0;
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-
-            double x = (px - task->width / 2.0) / task->zoom + task->offsetX;
-            double y = (py - task->height / 2.0) / task->zoom + task->offsetY;
-            double cx = task->julia_c_re;
-            double cy = task->julia_c_im;
-            int iteration = 0;
-
-            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
-                double xtemp = x * x - y * y + cx;
-                y = 2.0 * x * y + cy;
-                x = xtemp;
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            return;
-        }
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-}
-
-
-// Calcul d'une image pour le type de Fractale: Burning Ship
-void calculate_iterations_burning_ship(FractalTask* task) {
-    int done = 0;
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-
-            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
-            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
-            double x = 0.0, y = 0.0;
-            int iteration = 0;
-
-            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
-                double xtemp = x * x - y * y + x0;
-                y = fabs(2.0 * x * y) + y0;
-                x = fabs(xtemp);
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            return;
-        }
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-}
-
-
-// Calcul d'une image pour le type de Fractale: Tricorn
-void calculate_iterations_tricorn(FractalTask* task) {
-    int done = 0;
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-
-            double x0 = (px - task->width / 2.0) / task->zoom + task->offsetX;
-            double y0 = (py - task->height / 2.0) / task->zoom + task->offsetY;
-            double x = 0.0, y = 0.0;
-            int iteration = 0;
-
-            while (x * x + y * y <= 4.0 && iteration < task->max_iteration) {
-                double xtemp = x * x - y * y + x0;
-                y = -2.0 * x * y + y0;
-                x = xtemp;
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            return;
-        }
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-}
 
 
 // Calcul d'une image pour le type de Fractale: Multibrot
 void calculate_iterations_multibrot(FractalTask* task) {
     int done = 0;
     int power = task->multibrot_power;
+    int checkStopInterval = 100000;
+    int calcCount = 0;
     for (int py = 0; py < task->height; py++) {
         for (int px = 0; px < task->width; px++) {
 
@@ -1984,355 +2004,23 @@ void calculate_iterations_multibrot(FractalTask* task) {
                 x = new_x;
                 y = new_y;
                 iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            return;
-        }
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-}
-
-
-// Utilise une biliothèque permettant un zoom techniquement infini
-#ifdef __linux__
-
-void calculate_iterations_mandelbrot_mpfr(FractalTask* task) {
-    int done = 0;
-    mpfr_prec_t prec = 256; // Précision en bits, ajustez selon vos besoins
-
-    mpfr_t x0, y0, x, y, xtemp, x_squared, y_squared, four;
-    mpfr_inits2(prec, x0, y0, x, y, xtemp, x_squared, y_squared, four, (mpfr_ptr) 0);
-    mpfr_set_d(four, 4.0, MPFR_RNDN);
-
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-            // x0 = (px - width / 2.0) / zoom + offsetX
-            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
-            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
-
-            // y0 = (py - height / 2.0) / zoom + offsetY
-            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
-            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
-
-            mpfr_set_d(x, 0.0, MPFR_RNDN);
-            mpfr_set_d(y, 0.0, MPFR_RNDN);
-            int iteration = 0;
-
-            while (iteration < task->max_iteration) {
-                // x_squared = x * x
-                mpfr_mul(x_squared, x, x, MPFR_RNDN);
-                // y_squared = y * y
-                mpfr_mul(y_squared, y, y, MPFR_RNDN);
-
-                // x_squared + y_squared > 4.0 ?
-                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
-                if (mpfr_cmp(xtemp, four) > 0)
-                    break;
-
-                // xtemp = x_squared - y_squared + x0
-                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
-                mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);
-
-                // y = 2 * x * y + y0
-                mpfr_mul(y, x, y, MPFR_RNDN);
-                mpfr_mul_d(y, y, 2.0, MPFR_RNDN);
-                mpfr_add(y, y, y0, MPFR_RNDN);
-
-                // x = xtemp
-                mpfr_set(x, xtemp, MPFR_RNDN);
-
-                iteration++;
+                
+                // On vérifie périodiquement si on demande de sortir ou non
+                calcCount++;
+                if (calcCount % checkStopInterval == 0 && task->shouldStop) {
+                    *task->finished = true;
+                    return;
+                }
             }
 
             task->iterationMapBis[py * task->width + px] = iteration;
             done++;
         }
 
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, four, (mpfr_ptr) 0);
-            return;
-        }
-
         *task->progress = (done * 100) / (task->width * task->height);
     }
-
-    mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, four, (mpfr_ptr) 0);
 }
 
-
-void calculate_iterations_julia_mpfr(FractalTask* task) {
-    int done = 0;
-    mpfr_prec_t prec = 256;
-
-    mpfr_t x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four;
-    mpfr_inits2(prec, x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four, (mpfr_ptr) 0);
-    mpfr_set_d(four, 4.0, MPFR_RNDN);
-    mpfr_set_d(cx, task->julia_c_re, MPFR_RNDN);
-    mpfr_set_d(cy, task->julia_c_im, MPFR_RNDN);
-
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-            // Coordonnées initiales
-            mpfr_set_d(x, px - task->width / 2.0, MPFR_RNDN);
-            mpfr_div_d(x, x, task->zoom, MPFR_RNDN);
-            mpfr_add_d(x, x, task->offsetX, MPFR_RNDN);
-
-            mpfr_set_d(y, py - task->height / 2.0, MPFR_RNDN);
-            mpfr_div_d(y, y, task->zoom, MPFR_RNDN);
-            mpfr_add_d(y, y, task->offsetY, MPFR_RNDN);
-
-            int iteration = 0;
-            while (iteration < task->max_iteration) {
-                mpfr_mul(x_squared, x, x, MPFR_RNDN);
-                mpfr_mul(y_squared, y, y, MPFR_RNDN);
-                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
-                if (mpfr_cmp(xtemp, four) > 0)
-                    break;
-
-                // xtemp = x² - y² + cx
-                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
-                mpfr_add(xtemp, xtemp, cx, MPFR_RNDN);
-
-                // y = 2xy + cy
-                mpfr_mul(two_xy, x, y, MPFR_RNDN);
-                mpfr_mul_d(two_xy, two_xy, 2.0, MPFR_RNDN);
-                mpfr_add(y, two_xy, cy, MPFR_RNDN);
-
-                // x = xtemp
-                mpfr_set(x, xtemp, MPFR_RNDN);
-
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            mpfr_clears(x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four, (mpfr_ptr) 0);
-            return;
-        }
-
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-
-    mpfr_clears(x, y, xtemp, x_squared, y_squared, two_xy, cx, cy, four, (mpfr_ptr) 0);
-}
-
-
-void calculate_iterations_burning_ship_mpfr(FractalTask* task) {
-    int done = 0;
-    mpfr_prec_t prec = 256;
-
-    mpfr_t x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four;
-    mpfr_inits2(prec, x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
-    mpfr_set_d(four, 4.0, MPFR_RNDN);
-
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-            // x0
-            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
-            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
-
-            // y0
-            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
-            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
-
-            mpfr_set_d(x, 0.0, MPFR_RNDN);
-            mpfr_set_d(y, 0.0, MPFR_RNDN);
-            int iteration = 0;
-
-            while (iteration < task->max_iteration) {
-                // x², y²
-                mpfr_mul(x_squared, x, x, MPFR_RNDN);
-                mpfr_mul(y_squared, y, y, MPFR_RNDN);
-                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
-                if (mpfr_cmp(xtemp, four) > 0)
-                    break;
-
-                // xtemp = |x² - y² + x0|
-                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
-                mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);
-                mpfr_abs(x, xtemp, MPFR_RNDN);
-
-                // y = |2xy + y0|
-                mpfr_mul(two_xy, x, y, MPFR_RNDN);
-                mpfr_mul_d(two_xy, two_xy, 2.0, MPFR_RNDN);
-                mpfr_add(y, two_xy, y0, MPFR_RNDN);
-                mpfr_abs(y, y, MPFR_RNDN);
-
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
-            return;
-        }
-
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-
-    mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
-}
-
-
-
-void calculate_iterations_tricorn_mpfr(FractalTask* task) {
-    int done = 0;
-    mpfr_prec_t prec = 256;
-
-    mpfr_t x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four;
-    mpfr_inits2(prec, x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
-    mpfr_set_d(four, 4.0, MPFR_RNDN);
-
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-            // Position dans le plan complexe
-            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
-            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
-
-            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
-            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
-
-            mpfr_set_d(x, 0.0, MPFR_RNDN);
-            mpfr_set_d(y, 0.0, MPFR_RNDN);
-            int iteration = 0;
-
-            while (iteration < task->max_iteration) {
-                mpfr_mul(x_squared, x, x, MPFR_RNDN);
-                mpfr_mul(y_squared, y, y, MPFR_RNDN);
-                mpfr_add(xtemp, x_squared, y_squared, MPFR_RNDN);
-                if (mpfr_cmp(xtemp, four) > 0)
-                    break;
-
-                // xtemp = x² - y² + x0
-                mpfr_sub(xtemp, x_squared, y_squared, MPFR_RNDN);
-                mpfr_add(xtemp, xtemp, x0, MPFR_RNDN);
-
-                // y = -2xy + y0
-                mpfr_mul(two_xy, x, y, MPFR_RNDN);
-                mpfr_mul_d(two_xy, two_xy, -2.0, MPFR_RNDN);
-                mpfr_add(y, two_xy, y0, MPFR_RNDN);
-
-                mpfr_set(x, xtemp, MPFR_RNDN);
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
-            return;
-        }
-
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-
-    mpfr_clears(x0, y0, x, y, xtemp, x_squared, y_squared, two_xy, four, (mpfr_ptr) 0);
-}
-
-
-void calculate_iterations_multibrot_mpfr(FractalTask* task) {
-    int done = 0;
-    int power = task->multibrot_power;
-    mpfr_prec_t prec = 256;
-
-    mpfr_t x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four;
-    mpfr_inits2(prec, x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four, (mpfr_ptr) 0);
-    mpfr_set_d(four, 4.0, MPFR_RNDN);
-
-    for (int py = 0; py < task->height; py++) {
-        for (int px = 0; px < task->width; px++) {
-            // Coordonnées initiales
-            mpfr_set_d(x0, px - task->width / 2.0, MPFR_RNDN);
-            mpfr_div_d(x0, x0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(x0, x0, task->offsetX, MPFR_RNDN);
-
-            mpfr_set_d(y0, py - task->height / 2.0, MPFR_RNDN);
-            mpfr_div_d(y0, y0, task->zoom, MPFR_RNDN);
-            mpfr_add_d(y0, y0, task->offsetY, MPFR_RNDN);
-
-            mpfr_set_d(x, 0.0, MPFR_RNDN);
-            mpfr_set_d(y, 0.0, MPFR_RNDN);
-            int iteration = 0;
-
-            while (iteration < task->max_iteration) {
-                // r = sqrt(x^2 + y^2)
-                mpfr_mul(x_squared, x, x, MPFR_RNDN);
-                mpfr_mul(y_squared, y, y, MPFR_RNDN);
-                mpfr_add(sum, x_squared, y_squared, MPFR_RNDN);
-                if (mpfr_cmp(sum, four) > 0)
-                    break;
-                mpfr_sqrt(r, sum, MPFR_RNDN);
-
-                // theta = atan2(y, x)
-                mpfr_atan2(theta, y, x, MPFR_RNDN);
-
-                // r^power
-                mpfr_pow_ui(r_pow, r, power, MPFR_RNDN);
-
-                // angle = power * theta
-                mpfr_mul_si(angle, theta, power, MPFR_RNDN);
-
-                // new_x = r^power * cos(angle) + x0
-                mpfr_cos(new_x, angle, MPFR_RNDN);
-                mpfr_mul(new_x, r_pow, new_x, MPFR_RNDN);
-                mpfr_add(new_x, new_x, x0, MPFR_RNDN);
-
-                // new_y = r^power * sin(angle) + y0
-                mpfr_sin(new_y, angle, MPFR_RNDN);
-                mpfr_mul(new_y, r_pow, new_y, MPFR_RNDN);
-                mpfr_add(new_y, new_y, y0, MPFR_RNDN);
-
-                mpfr_set(x, new_x, MPFR_RNDN);
-                mpfr_set(y, new_y, MPFR_RNDN);
-                iteration++;
-            }
-
-            task->iterationMapBis[py * task->width + px] = iteration;
-            done++;
-        }
-
-        if (task->shouldStop) {
-            *task->progress = 100;
-            *task->finished = true;
-            mpfr_clears(x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four, (mpfr_ptr) 0);
-            return;
-        }
-
-        *task->progress = (done * 100) / (task->width * task->height);
-    }
-
-    mpfr_clears(x0, y0, x, y, r, theta, r_pow, angle, new_x, new_y, x_squared, y_squared, sum, four, (mpfr_ptr) 0);
-}
-
-#endif
 
 
 // Fait le rendu en couleurs des itérations sur la cible SDL
